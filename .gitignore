@@ -1,0 +1,95 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.*
+
+# Frontend build output
+dist/
+build/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Vite/TypeScript generated config artifacts
+vite.config.js
+vite.config.d.ts
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+vite-dev.out.log
+vite-dev.err.log
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+*.local
+
+# Python / AI training environments
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.ipynb_checkpoints/
+
+# Generated training data and experiment outputs
+Data/Replays/
+Data/Runs/
+Data/Exports/
+Data/Metrics/
+Data/Models/
+Data/Checkpoints/
+runs/
+outputs/
+artifacts/
+checkpoints/
+models/
+tensorboard/
+wandb/
+mlruns/
+
+# Keep curated editable tracks in git
+!Data/
+!Data/Tracks/
+!Data/Tracks/*.track.json
+
+# Package manager caches
+.npm/
+.yarn/
+.pnpm-store/
+
+# IDE/editor state
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln.docstates
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.swp

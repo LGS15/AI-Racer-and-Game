@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { ReferenceLineAgent, manualActionFromInput } from './agents';
-import { compileTrack, createDefaultTrack, getCheckpoints, hashTrack, validateTrackJson } from './track';
+import {
+  addCheckpoint,
+  compileTrack,
+  createDefaultTrack,
+  getCheckpointTargets,
+  getCheckpoints,
+  hashTrack,
+  moveCheckpoint,
+  updateTrackPointWidth,
+  validateTrackJson
+} from './track';
 import { DEFAULT_SIM_CONFIG, buildObservation, clampAction, createInitialState, stepSimulation } from './simulation';
 import { createReplayBuilder, finalizeReplay, recordReplayFrame, sampleReplayFrame, validateReplayJson } from './replay';
 import type { AgentAction } from './types';
@@ -26,6 +36,34 @@ describe('track generation', () => {
 
     expect(result.ok).toBe(true);
     expect(result.value?.centerline.every((point) => point.id)).toBe(true);
+  });
+
+  it('uses manual checkpoints when they are present', () => {
+    const track = {
+      ...createDefaultTrack(),
+      checkpointCount: 2,
+      checkpoints: [
+        { id: 'start', progress: 0 },
+        { id: 'hairpin', progress: 320 }
+      ]
+    };
+    const checkpoints = getCheckpointTargets(compileTrack(track));
+
+    expect(checkpoints).toHaveLength(2);
+    expect(checkpoints[1].id).toBe('hairpin');
+    expect(checkpoints[1].progress).toBeCloseTo(320);
+  });
+
+  it('edits checkpoint positions and local track limits', () => {
+    const track = createDefaultTrack();
+    const compiled = compileTrack(track);
+    const withCheckpoint = addCheckpoint(track, compiled, { x: 575, y: 165 });
+    const moved = moveCheckpoint(withCheckpoint, compileTrack(withCheckpoint), 'c0', { x: 985, y: 405 });
+    const widened = updateTrackPointWidth(moved, moved.centerline[0].id, 188);
+
+    expect(withCheckpoint.checkpoints).toHaveLength(track.checkpointCount + 1);
+    expect(moved.checkpoints?.[0].progress).not.toBe(0);
+    expect(widened.centerline[0].width).toBe(188);
   });
 });
 

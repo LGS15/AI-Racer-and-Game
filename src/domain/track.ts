@@ -1,8 +1,10 @@
 import { clamp, distance, dot, fromAngle, lerp, normalize, projectPointToSegment, rightNormal, sub, wrapDistance } from './geometry';
-import type { ClosestTrackPoint, CompiledTrack, TrackJson, TrackPoint, TrackSample, ValidationResult, Vec2 } from './types';
+import type { ClosestTrackPoint, CompiledTrack, TrackCheckpoint, TrackJson, TrackPoint, TrackSample, ValidationResult, Vec2 } from './types';
 
 const WORLD_W = 1200;
 const WORLD_H = 800;
+const MIN_TRACK_WIDTH = 40;
+const MAX_TRACK_WIDTH = 260;
 
 export function createDefaultTrack(): TrackJson {
   const now = new Date().toISOString();
@@ -100,8 +102,37 @@ export function fromProgressDistance(compiled: CompiledTrack, progressDistance: 
 }
 
 export function getCheckpoints(compiled: CompiledTrack): TrackSample[] {
+  return getCheckpointTargets(compiled).map((checkpoint) => checkpoint.sample);
+}
+
+export function getCheckpointTargets(compiled: CompiledTrack): Array<TrackCheckpoint & { index: number; sample: TrackSample; manual: boolean }> {
+  const manualCheckpoints = (compiled.source.checkpoints ?? []).filter(
+    (checkpoint) => typeof checkpoint.id === 'string' && checkpoint.id && Number.isFinite(checkpoint.progress)
+  );
+  if (manualCheckpoints.length >= 2) {
+    return manualCheckpoints
+      .map((checkpoint, index) => ({
+        id: checkpoint.id,
+        index,
+        progress: wrapDistance(checkpoint.progress, compiled.totalLength),
+        sample: sampleTrackAt(compiled, fromProgressDistance(compiled, checkpoint.progress)),
+        manual: true
+      }))
+      .sort((a, b) => a.progress - b.progress)
+      .map((checkpoint, index) => ({ ...checkpoint, index }));
+  }
+
   const count = Math.max(2, Math.round(compiled.source.checkpointCount));
-  return Array.from({ length: count }, (_, index) => sampleTrackAt(compiled, fromProgressDistance(compiled, (compiled.totalLength / count) * index)));
+  return Array.from({ length: count }, (_, index) => {
+    const progress = (compiled.totalLength / count) * index;
+    return {
+      id: `c${index}`,
+      index,
+      progress,
+      sample: sampleTrackAt(compiled, fromProgressDistance(compiled, progress)),
+      manual: false
+    };
+  });
 }
 
 export function closestPointOnTrack(compiled: CompiledTrack, point: Vec2): ClosestTrackPoint {
@@ -166,7 +197,7 @@ export function validateTrackJson(input: unknown): ValidationResult<TrackJson> {
         y: clamp(y, 0, WORLD_H)
       };
       if (Number.isFinite(width)) {
-        trackPoint.width = clamp(width as number, 40, 260);
+        trackPoint.width = clamp(width as number, MIN_TRACK_WIDTH, MAX_TRACK_WIDTH);
       }
       return trackPoint;
     })
@@ -179,7 +210,7 @@ export function validateTrackJson(input: unknown): ValidationResult<TrackJson> {
     errors.push('Track needs at least three valid centerline points.');
   }
 
-  const globalWidth = clamp(Number(value.globalWidth) || 110, 40, 260);
+  const globalWidth = clamp(Number(value.globalWidth) || 110, MIN_TRACK_WIDTH, MAX_TRACK_WIDTH);
   const checkpointCount = clamp(Math.round(Number(value.checkpointCount) || 10), 2, 64);
   const pointIndex = clamp(Math.round(Number(value.start?.pointIndex) || 0), 0, Math.max(0, centerline.length - 1));
   const direction = value.start?.direction === -1 ? -1 : 1;
@@ -203,7 +234,30 @@ export function validateTrackJson(input: unknown): ValidationResult<TrackJson> {
 
   if (!errors.length) {
     try {
-      compileTrack(track);
+      const compiled = compileTrack(track);
+      const rawCheckpoints = Array.isArray(value.checkpoints) ? value.checkpoints : [];
+      if (rawCheckpoints.length > 0) {
+        const checkpoints = rawCheckpoints
+          .map<TrackCheckpoint | undefined>((checkpoint, index) => {
+            const candidate = checkpoint as Partial<TrackCheckpoint>;
+            const progress = Number(candidate.progress);
+            if (!Number.isFinite(progress)) return undefined;
+            return {
+              id: typeof candidate.id === 'string' && candidate.id ? candidate.id : `c${index}`,
+              progress: wrapDistance(progress, compiled.totalLength)
+            };
+          })
+          .filter((checkpoint): checkpoint is TrackCheckpoint => Boolean(checkpoint));
+        if (checkpoints.length !== rawCheckpoints.length) {
+          warnings.push('Some invalid checkpoints were ignored.');
+        }
+        if (checkpoints.length >= 2) {
+          track.checkpoints = checkpoints;
+          track.checkpointCount = checkpoints.length;
+        } else {
+          warnings.push('Manual checkpoints need at least two valid gates; using evenly spaced checkpoints.');
+        }
+      }
     } catch (error) {
       errors.push(error instanceof Error ? error.message : 'Track could not be compiled.');
     }
@@ -244,6 +298,15 @@ export function updateTrackPoint(track: TrackJson, pointId: string, position: Ve
   };
 }
 
+export function updateTrackPointWidth(track: TrackJson, pointId: string, width: number): TrackJson {
+  return {
+    ...track,
+    centerline: track.centerline.map((point) =>
+      point.id === pointId ? { ...point, width: clamp(width, MIN_TRACK_WIDTH, MAX_TRACK_WIDTH) } : point
+    )
+  };
+}
+
 export function removeTrackPoint(track: TrackJson, pointId: string): TrackJson {
   if (track.centerline.length <= 3) return track;
   const removeIndex = track.centerline.findIndex((point) => point.id === pointId);
@@ -259,12 +322,60 @@ export function removeTrackPoint(track: TrackJson, pointId: string): TrackJson {
   };
 }
 
+export function ensureManualCheckpoints(compiled: CompiledTrack): TrackCheckpoint[] {
+  return getCheckpointTargets(compiled).map((checkpoint) => ({
+    id: checkpoint.id,
+    progress: wrapDistance(checkpoint.progress, compiled.totalLength)
+  }));
+}
+
+export function moveCheckpoint(track: TrackJson, compiled: CompiledTrack, checkpointId: string, point: Vec2): TrackJson {
+  const closest = closestPointOnTrack(compiled, point);
+  const checkpoints = ensureManualCheckpoints(compiled).map((checkpoint) =>
+    checkpoint.id === checkpointId ? { ...checkpoint, progress: closest.progressDistance } : checkpoint
+  );
+  return {
+    ...track,
+    checkpoints,
+    checkpointCount: checkpoints.length
+  };
+}
+
+export function addCheckpoint(track: TrackJson, compiled: CompiledTrack, point: Vec2): TrackJson {
+  const closest = closestPointOnTrack(compiled, point);
+  const checkpoints = [
+    ...ensureManualCheckpoints(compiled),
+    {
+      id: `c${Date.now().toString(36)}${Math.round(point.x)}${Math.round(point.y)}`,
+      progress: closest.progressDistance
+    }
+  ].sort((a, b) => a.progress - b.progress);
+  return {
+    ...track,
+    checkpoints,
+    checkpointCount: checkpoints.length
+  };
+}
+
+export function removeCheckpoint(track: TrackJson, compiled: CompiledTrack, checkpointId: string): TrackJson {
+  const checkpoints = ensureManualCheckpoints(compiled).filter((checkpoint) => checkpoint.id !== checkpointId);
+  if (checkpoints.length < 2) return track;
+  return {
+    ...track,
+    checkpoints,
+    checkpointCount: checkpoints.length
+  };
+}
+
 export function hashTrack(track: TrackJson): string {
   const stable = JSON.stringify({
     version: track.version,
     width: Math.round(track.globalWidth * 100) / 100,
     start: track.start,
     checkpoints: track.checkpointCount,
+    manualCheckpoints: track.checkpoints?.map((checkpoint) => ({
+      progress: Math.round(checkpoint.progress * 100) / 100
+    })),
     centerline: track.centerline.map((point) => ({
       x: Math.round(point.x * 100) / 100,
       y: Math.round(point.y * 100) / 100,

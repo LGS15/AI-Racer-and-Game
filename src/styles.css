@@ -309,7 +309,7 @@ button.active,
 
 .editTools {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   margin-top: 12px;
 }
 
@@ -503,5 +503,9 @@ button.active,
 
   .timelinePanel input[type='range'] {
     min-width: 180px;
+  }
+
+  .editTools {
+    grid-template-columns: repeat(3, 1fr);
   }
 }

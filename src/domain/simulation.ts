@@ -1,5 +1,5 @@
 import { angleDifference, clamp, crossedForward, dot, forwardDelta, fromAngle, scale } from './geometry';
-import { closestPointOnTrack, fromProgressDistance, sampleTrackAt, toProgressDistance } from './track';
+import { closestPointOnTrack, fromProgressDistance, getCheckpointTargets, sampleTrackAt, toProgressDistance } from './track';
 import type { AgentAction, AgentObservation, CarState, CompiledTrack, SimConfig, SimulationEvent, SimulationState, Vec2 } from './types';
 
 export const DEFAULT_SIM_CONFIG: SimConfig = {
@@ -126,12 +126,16 @@ export function stepSimulation(
   car.lapTime = elapsed - state.lapStartTime;
 
   const progressDelta = forwardDelta(previousProgress, car.progressDistance, compiled.totalLength);
-  const checkpointCount = Math.max(2, compiled.source.checkpointCount);
-  const spacing = compiled.totalLength / checkpointCount;
-  let nextCheckpoint = car.nextCheckpoint;
+  const checkpoints = getCheckpointTargets(compiled);
+  const checkpointCount = checkpoints.length;
+  let nextCheckpoint = car.nextCheckpoint % checkpointCount;
   let lapStartTime = state.lapStartTime;
 
-  for (let guard = 0; guard < checkpointCount && crossedForward(previousProgress, progressDelta, nextCheckpoint * spacing, compiled.totalLength); guard += 1) {
+  for (
+    let guard = 0;
+    guard < checkpointCount && crossedForward(previousProgress, progressDelta, checkpoints[nextCheckpoint]?.progress ?? 0, compiled.totalLength);
+    guard += 1
+  ) {
     if (nextCheckpoint === 0 && state.elapsed > 1) {
       const lapTime = elapsed - state.lapStartTime;
       car.lap += 1;
@@ -178,7 +182,7 @@ export function buildObservation(
     speed,
     headingError: angleDifference(tangentHeading, car.heading),
     lateralOffset: clamp(closest.lateralOffset / Math.max(1, closest.width / 2), -2, 2),
-    checkpointProgress: car.nextCheckpoint / Math.max(1, compiled.source.checkpointCount),
+    checkpointProgress: car.nextCheckpoint / Math.max(1, getCheckpointTargets(compiled).length),
     lapProgress: car.progressDistance / compiled.totalLength,
     offTrack: car.offTrack,
     collision

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Bot,
+  CircleDot,
   Download,
   Flag,
   Gauge,
@@ -12,20 +13,21 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Ruler,
   Save,
   Trash2,
   Upload
 } from 'lucide-react';
-import RacingCanvas, { deleteSelectedPoint } from './components/RacingCanvas';
+import RacingCanvas, { deleteSelectedCheckpoint, deleteSelectedPoint } from './components/RacingCanvas';
 import { ReplayCharts } from './components/Charts';
 import { ReferenceLineAgent, getAgentLabel, manualActionFromInput } from './domain/agents';
 import { DEFAULT_SIM_CONFIG, buildObservation, createInitialState, stepSimulation } from './domain/simulation';
-import { compileTrack, createDefaultTrack, hashTrack, validateTrackJson } from './domain/track';
+import { compileTrack, createDefaultTrack, getCheckpointTargets, hashTrack, validateTrackJson } from './domain/track';
 import { createReplayBuilder, finalizeReplay, recordReplayFrame, sampleReplayFrame, validateReplayJson } from './domain/replay';
 import type { AgentAction, AgentObservation, Mode, ReplayJson, SimulationState, TrackJson } from './domain/types';
 
 type AgentKind = 'manual' | 'reference';
-type EditorTool = 'select' | 'insert';
+type EditorTool = 'select' | 'insert' | 'checkpoint' | 'barrier';
 
 const seed = 1;
 
@@ -40,6 +42,7 @@ export default function App() {
   const [replayPlaying, setReplayPlaying] = useState(false);
   const [editorTool, setEditorTool] = useState<EditorTool>('select');
   const [selectedPointId, setSelectedPointId] = useState<string | undefined>();
+  const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | undefined>();
   const [notice, setNotice] = useState('');
   const compiled = useMemo(() => {
     try {
@@ -48,6 +51,7 @@ export default function App() {
       return undefined;
     }
   }, [track]);
+  const checkpointTargets = useMemo(() => (compiled ? getCheckpointTargets(compiled) : []), [compiled]);
 
   const initialState = useMemo(() => (compiled ? createInitialState(compiled, DEFAULT_SIM_CONFIG, seed) : undefined), [compiled]);
   const [snapshot, setSnapshot] = useState<SimulationState | undefined>(initialState);
@@ -223,6 +227,7 @@ export default function App() {
       }
       setTrack(result.value);
       setSelectedPointId(undefined);
+      setSelectedCheckpointId(undefined);
       setMode('edit');
       setNotice(result.warnings.length ? result.warnings.join(' ') : 'Track imported.');
     } catch (error) {
@@ -308,9 +313,11 @@ export default function App() {
             replay={mode === 'analyze' ? replay : undefined}
             replayTime={replayTime}
             selectedPointId={selectedPointId}
+            selectedCheckpointId={selectedCheckpointId}
             editorTool={editorTool}
             onTrackChange={setTrack}
             onSelectPoint={setSelectedPointId}
+            onSelectCheckpoint={setSelectedCheckpointId}
           />
           <div className="timelinePanel">
             {mode === 'analyze' && replay ? (
@@ -411,16 +418,25 @@ export default function App() {
             </label>
             <label className="field">
               <span>Width</span>
-              <input type="range" min={50} max={220} value={track.globalWidth} onChange={(event) => patchTrack({ globalWidth: Number(event.target.value) })} />
+              <input
+                type="range"
+                min={50}
+                max={220}
+                value={track.globalWidth}
+                onChange={(event) => patchTrack({ globalWidth: Number(event.target.value) })}
+              />
             </label>
             <label className="field">
-              <span>Checkpoints</span>
+              <span>Checkpoints {track.checkpoints ? checkpointTargets.length : track.checkpointCount}</span>
               <input
                 type="range"
                 min={4}
                 max={32}
                 value={track.checkpointCount}
-                onChange={(event) => patchTrack({ checkpointCount: Number(event.target.value) })}
+                onChange={(event) => {
+                  setSelectedCheckpointId(undefined);
+                  patchTrack({ checkpointCount: Number(event.target.value), checkpoints: undefined });
+                }}
               />
             </label>
             {mode === 'edit' ? (
@@ -431,17 +447,45 @@ export default function App() {
                 <button className={editorTool === 'insert' ? 'active' : ''} onClick={() => setEditorTool('insert')} title="Insert centerline point">
                   <Plus size={17} />
                 </button>
+                <button
+                  className={editorTool === 'checkpoint' ? 'active' : ''}
+                  onClick={() => {
+                    setEditorTool('checkpoint');
+                    setSelectedPointId(undefined);
+                  }}
+                  title="Add and drag checkpoints"
+                >
+                  <CircleDot size={17} />
+                </button>
+                <button
+                  className={editorTool === 'barrier' ? 'active' : ''}
+                  onClick={() => {
+                    setEditorTool('barrier');
+                    setSelectedCheckpointId(undefined);
+                  }}
+                  title="Drag track limits"
+                >
+                  <Ruler size={17} />
+                </button>
                 <button onClick={setStartAtSelectedPoint} disabled={!selectedPointId} title="Set start line">
                   <Flag size={17} />
                 </button>
                 <button
                   onClick={() => {
-                    const next = deleteSelectedPoint(track, selectedPointId);
+                    const next =
+                      editorTool === 'checkpoint'
+                        ? deleteSelectedCheckpoint(track, compiled, selectedCheckpointId)
+                        : deleteSelectedPoint(track, selectedPointId);
                     setTrack(next);
                     setSelectedPointId(undefined);
+                    setSelectedCheckpointId(undefined);
                   }}
-                  disabled={!selectedPointId || track.centerline.length <= 3}
-                  title="Delete selected point"
+                  disabled={
+                    editorTool === 'checkpoint'
+                      ? !selectedCheckpointId || checkpointTargets.length <= 2
+                      : !selectedPointId || track.centerline.length <= 3
+                  }
+                  title={editorTool === 'checkpoint' ? 'Delete selected checkpoint' : 'Delete selected point'}
                 >
                   <Trash2 size={17} />
                 </button>

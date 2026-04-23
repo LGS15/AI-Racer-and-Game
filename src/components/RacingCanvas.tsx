@@ -1,15 +1,30 @@
 import { useEffect, useRef } from 'react';
-import { Plus } from 'lucide-react';
+import { CirclePlus, Plus } from 'lucide-react';
 import { DEFAULT_SIM_CONFIG } from '../domain/simulation';
-import { getCheckpoints, insertPointAfterNearestSegment, removeTrackPoint, updateTrackPoint } from '../domain/track';
-import { distance, fromAngle } from '../domain/geometry';
+import {
+  addCheckpoint,
+  compileTrack,
+  getCheckpointTargets,
+  getCheckpoints,
+  insertPointAfterNearestSegment,
+  moveCheckpoint,
+  removeCheckpoint,
+  removeTrackPoint,
+  updateTrackPoint,
+  updateTrackPointWidth
+} from '../domain/track';
+import { distance, dot, fromAngle, normalize, rightNormal, sub } from '../domain/geometry';
 import { sampleReplayFrame } from '../domain/replay';
 import type { AgentObservation, CarState, CompiledTrack, Mode, ReplayJson, TrackJson, TrackPoint, Vec2 } from '../domain/types';
 
 const WORLD_WIDTH = 1200;
 const WORLD_HEIGHT = 800;
 
-type EditorTool = 'select' | 'insert';
+type EditorTool = 'select' | 'insert' | 'checkpoint' | 'barrier';
+type DragTarget =
+  | { type: 'point'; id: string }
+  | { type: 'checkpoint'; id: string }
+  | { type: 'barrier'; id: string };
 
 interface RacingCanvasProps {
   mode: Mode;
@@ -20,9 +35,11 @@ interface RacingCanvasProps {
   replay?: ReplayJson;
   replayTime: number;
   selectedPointId?: string;
+  selectedCheckpointId?: string;
   editorTool: EditorTool;
   onTrackChange(track: TrackJson): void;
   onSelectPoint(pointId?: string): void;
+  onSelectCheckpoint(checkpointId?: string): void;
 }
 
 interface Viewport {
@@ -42,12 +59,14 @@ export default function RacingCanvas({
   replay,
   replayTime,
   selectedPointId,
+  selectedCheckpointId,
   editorTool,
   onTrackChange,
-  onSelectPoint
+  onSelectPoint,
+  onSelectCheckpoint
 }: RacingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const draggingRef = useRef<string | undefined>(undefined);
+  const draggingRef = useRef<DragTarget | undefined>(undefined);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -61,7 +80,7 @@ export default function RacingCanvas({
 
   useEffect(() => {
     draw();
-  }, [mode, track, compiled, car, observation, replay, replayTime, selectedPointId, editorTool]);
+  }, [mode, track, compiled, car, observation, replay, replayTime, selectedPointId, selectedCheckpointId, editorTool]);
 
   function draw() {
     const canvas = canvasRef.current;
@@ -91,7 +110,7 @@ export default function RacingCanvas({
       drawReplay(ctx, replay, replayTime);
       if (car && mode !== 'analyze') drawSensors(ctx, car, observation);
       if (car && mode !== 'analyze') drawCar(ctx, car, '#e4574f', '#ffffff');
-      if (mode === 'edit') drawEditor(ctx, track, selectedPointId, editorTool);
+      if (mode === 'edit') drawEditor(ctx, compiled, track, selectedPointId, selectedCheckpointId, editorTool);
     }
     ctx.restore();
   }
@@ -107,16 +126,52 @@ export default function RacingCanvas({
       const inserted = nearestPoint(nextTrack.centerline, world);
       onTrackChange(nextTrack);
       onSelectPoint(inserted?.id);
+      onSelectCheckpoint(undefined);
+      return;
+    }
+
+    if (editorTool === 'checkpoint' && compiled) {
+      const hit = nearestCheckpoint(compiled, world, 30);
+      if (hit) {
+        draggingRef.current = { type: 'checkpoint', id: hit.id };
+        onSelectCheckpoint(hit.id);
+        onSelectPoint(undefined);
+        return;
+      }
+      const nextTrack = addCheckpoint(track, compiled, world);
+      const nextCompiled = compileTrack(nextTrack);
+      const inserted = nearestCheckpoint(nextCompiled, world);
+      onTrackChange(nextTrack);
+      onSelectCheckpoint(inserted?.id);
+      onSelectPoint(undefined);
+      return;
+    }
+
+    if (editorTool === 'barrier') {
+      const hit = nearestBarrierHandle(track, world, 28);
+      if (hit) {
+        draggingRef.current = { type: 'barrier', id: hit.point.id };
+        onSelectPoint(hit.point.id);
+        onSelectCheckpoint(undefined);
+        onTrackChange(updatePointWidthFromWorld(track, hit.point.id, world));
+        return;
+      }
+      const point = nearestPoint(track.centerline, world, 24);
+      draggingRef.current = point ? { type: 'point', id: point.id } : undefined;
+      onSelectPoint(point?.id);
+      onSelectCheckpoint(undefined);
       return;
     }
 
     const hit = nearestPoint(track.centerline, world, 26);
     if (hit) {
-      draggingRef.current = hit.id;
+      draggingRef.current = { type: 'point', id: hit.id };
       onSelectPoint(hit.id);
+      onSelectCheckpoint(undefined);
     } else {
       draggingRef.current = undefined;
       onSelectPoint(undefined);
+      onSelectCheckpoint(undefined);
     }
   }
 
@@ -124,7 +179,13 @@ export default function RacingCanvas({
     if (mode !== 'edit' || !draggingRef.current) return;
     const world = eventToWorld(event);
     if (!world) return;
-    onTrackChange(updateTrackPoint(track, draggingRef.current, world));
+    if (draggingRef.current.type === 'point') {
+      onTrackChange(updateTrackPoint(track, draggingRef.current.id, world));
+    } else if (draggingRef.current.type === 'checkpoint' && compiled) {
+      onTrackChange(moveCheckpoint(track, compiled, draggingRef.current.id, world));
+    } else if (draggingRef.current.type === 'barrier') {
+      onTrackChange(updatePointWidthFromWorld(track, draggingRef.current.id, world));
+    }
   }
 
   function handlePointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
@@ -136,11 +197,13 @@ export default function RacingCanvas({
 
   function handleDoubleClick(event: React.MouseEvent<HTMLCanvasElement>) {
     if (mode !== 'edit') return;
+    if (editorTool !== 'select' && editorTool !== 'insert') return;
     const world = eventToWorld(event);
     if (!world) return;
     const nextTrack = insertPointAfterNearestSegment(track, world);
     onTrackChange(nextTrack);
     onSelectPoint(nearestPoint(nextTrack.centerline, world)?.id);
+    onSelectCheckpoint(undefined);
   }
 
   function eventToWorld(event: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>): Vec2 | undefined {
@@ -170,12 +233,21 @@ export default function RacingCanvas({
           <Plus size={16} />
         </div>
       ) : null}
+      {mode === 'edit' && editorTool === 'checkpoint' ? (
+        <div className="canvasBadge">
+          <CirclePlus size={16} />
+        </div>
+      ) : null}
     </div>
   );
 }
 
 export function deleteSelectedPoint(track: TrackJson, pointId?: string): TrackJson {
   return pointId ? removeTrackPoint(track, pointId) : track;
+}
+
+export function deleteSelectedCheckpoint(track: TrackJson, compiled: CompiledTrack | undefined, checkpointId?: string): TrackJson {
+  return compiled && checkpointId ? removeCheckpoint(track, compiled, checkpointId) : track;
 }
 
 function getViewport(width: number, height: number): Viewport {
@@ -217,18 +289,9 @@ function drawTrack(ctx: CanvasRenderingContext2D, compiled: CompiledTrack) {
     else path.lineTo(point.x, point.y);
   });
   path.closePath();
-  const width = compiled.source.globalWidth;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = '#191916';
-  ctx.lineWidth = width + 22;
-  ctx.stroke(path);
-  ctx.strokeStyle = '#5a5953';
-  ctx.lineWidth = width;
-  ctx.stroke(path);
-  ctx.strokeStyle = '#3f3e3a';
-  ctx.lineWidth = Math.max(10, width - 20);
-  ctx.stroke(path);
+  drawTrackBand(ctx, compiled, 22, '#191916');
+  drawTrackBand(ctx, compiled, 0, '#5a5953');
+  drawTrackBand(ctx, compiled, -20, '#3f3e3a');
   ctx.save();
   ctx.setLineDash([22, 24]);
   ctx.strokeStyle = 'rgba(245, 213, 112, 0.72)';
@@ -319,7 +382,14 @@ function drawCar(
   ctx.restore();
 }
 
-function drawEditor(ctx: CanvasRenderingContext2D, track: TrackJson, selectedPointId: string | undefined, editorTool: EditorTool) {
+function drawEditor(
+  ctx: CanvasRenderingContext2D,
+  compiled: CompiledTrack,
+  track: TrackJson,
+  selectedPointId: string | undefined,
+  selectedCheckpointId: string | undefined,
+  editorTool: EditorTool
+) {
   ctx.save();
   ctx.lineWidth = 2;
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
@@ -343,6 +413,47 @@ function drawEditor(ctx: CanvasRenderingContext2D, track: TrackJson, selectedPoi
     ctx.stroke();
   });
 
+  if (editorTool === 'checkpoint') {
+    for (const checkpoint of getCheckpointTargets(compiled)) {
+      const isSelected = checkpoint.id === selectedCheckpointId;
+      const half = checkpoint.sample.width / 2;
+      const a = {
+        x: checkpoint.sample.point.x - checkpoint.sample.normal.x * half,
+        y: checkpoint.sample.point.y - checkpoint.sample.normal.y * half
+      };
+      const b = {
+        x: checkpoint.sample.point.x + checkpoint.sample.normal.x * half,
+        y: checkpoint.sample.point.y + checkpoint.sample.normal.y * half
+      };
+      ctx.lineWidth = isSelected ? 6 : 4;
+      ctx.strokeStyle = isSelected ? '#f0a72f' : 'rgba(75, 190, 225, 0.9)';
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(checkpoint.sample.point.x, checkpoint.sample.point.y, isSelected ? 12 : 9, 0, Math.PI * 2);
+      ctx.fillStyle = isSelected ? '#f0a72f' : '#4bbee1';
+      ctx.fill();
+      ctx.strokeStyle = '#12313a';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  if (editorTool === 'barrier') {
+    for (const handle of getBarrierHandles(track)) {
+      const isSelected = handle.point.id === selectedPointId;
+      ctx.beginPath();
+      ctx.arc(handle.position.x, handle.position.y, isSelected ? 9 : 7, 0, Math.PI * 2);
+      ctx.fillStyle = handle.side === 1 ? '#e4574f' : '#4bbee1';
+      ctx.fill();
+      ctx.lineWidth = isSelected ? 3 : 2;
+      ctx.strokeStyle = '#1b1714';
+      ctx.stroke();
+    }
+  }
+
   if (editorTool === 'insert') {
     ctx.setLineDash([12, 12]);
     ctx.strokeStyle = 'rgba(240, 167, 47, 0.8)';
@@ -350,6 +461,96 @@ function drawEditor(ctx: CanvasRenderingContext2D, track: TrackJson, selectedPoi
     ctx.strokeRect(12, 12, WORLD_WIDTH - 24, WORLD_HEIGHT - 24);
   }
   ctx.restore();
+}
+
+function drawTrackBand(ctx: CanvasRenderingContext2D, compiled: CompiledTrack, widthOffset: number, fillStyle: string) {
+  const edges = getTrackEdges(compiled.source.centerline, compiled.source.globalWidth, widthOffset);
+  if (edges.left.length < 3 || edges.right.length < 3) return;
+  ctx.save();
+  ctx.fillStyle = fillStyle;
+  ctx.beginPath();
+  edges.left.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  for (let index = edges.right.length - 1; index >= 0; index -= 1) {
+    const point = edges.right[index];
+    ctx.lineTo(point.x, point.y);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function getTrackEdges(points: TrackPoint[], globalWidth: number, widthOffset = 0): { left: Vec2[]; right: Vec2[] } {
+  return points.reduce<{ left: Vec2[]; right: Vec2[] }>(
+    (edges, point, index) => {
+      const normal = getPointNormal(points, index);
+      const halfWidth = Math.max(6, ((point.width ?? globalWidth) + widthOffset) / 2);
+      edges.left.push({ x: point.x - normal.x * halfWidth, y: point.y - normal.y * halfWidth });
+      edges.right.push({ x: point.x + normal.x * halfWidth, y: point.y + normal.y * halfWidth });
+      return edges;
+    },
+    { left: [], right: [] }
+  );
+}
+
+function getBarrierHandles(track: TrackJson): Array<{ point: TrackPoint; side: -1 | 1; position: Vec2 }> {
+  return track.centerline.flatMap((point, index) => {
+    const normal = getPointNormal(track.centerline, index);
+    const halfWidth = (point.width ?? track.globalWidth) / 2;
+    return [
+      { point, side: -1 as const, position: { x: point.x - normal.x * halfWidth, y: point.y - normal.y * halfWidth } },
+      { point, side: 1 as const, position: { x: point.x + normal.x * halfWidth, y: point.y + normal.y * halfWidth } }
+    ];
+  });
+}
+
+function nearestBarrierHandle(track: TrackJson, target: Vec2, maxDistance = Number.POSITIVE_INFINITY) {
+  let best: ReturnType<typeof getBarrierHandles>[number] | undefined;
+  let bestDistance = maxDistance;
+  for (const handle of getBarrierHandles(track)) {
+    const candidateDistance = distance(handle.position, target);
+    if (candidateDistance <= bestDistance) {
+      best = handle;
+      bestDistance = candidateDistance;
+    }
+  }
+  return best;
+}
+
+function updatePointWidthFromWorld(track: TrackJson, pointId: string, world: Vec2): TrackJson {
+  const index = track.centerline.findIndex((point) => point.id === pointId);
+  if (index < 0) return track;
+  const point = track.centerline[index];
+  const normal = getPointNormal(track.centerline, index);
+  const offset = Math.abs(dot(sub(world, point), normal));
+  return updateTrackPointWidth(track, pointId, offset * 2);
+}
+
+function getPointNormal(points: TrackPoint[], index: number): Vec2 {
+  const point = points[index];
+  const previous = points[(index - 1 + points.length) % points.length];
+  const next = points[(index + 1) % points.length];
+  const incoming = normalize(sub(point, previous));
+  const outgoing = normalize(sub(next, point));
+  return normalize({
+    x: rightNormal(incoming).x + rightNormal(outgoing).x,
+    y: rightNormal(incoming).y + rightNormal(outgoing).y
+  });
+}
+
+function nearestCheckpoint(compiled: CompiledTrack, target: Vec2, maxDistance = Number.POSITIVE_INFINITY) {
+  let best: ReturnType<typeof getCheckpointTargets>[number] | undefined;
+  let bestDistance = maxDistance;
+  for (const checkpoint of getCheckpointTargets(compiled)) {
+    const candidateDistance = distance(checkpoint.sample.point, target);
+    if (candidateDistance <= bestDistance) {
+      best = checkpoint;
+      bestDistance = candidateDistance;
+    }
+  }
+  return best;
 }
 
 function nearestPoint(points: TrackPoint[], target: Vec2, maxDistance = Number.POSITIVE_INFINITY): TrackPoint | undefined {

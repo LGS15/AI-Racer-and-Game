@@ -10,6 +10,11 @@ export interface TrackPoint extends Vec2 {
   width?: number;
 }
 
+export interface TrackCheckpoint {
+  id: string;
+  progress: number;
+}
+
 export interface TrackJson {
   version: 1;
   metadata: {
@@ -24,6 +29,7 @@ export interface TrackJson {
     direction: 1 | -1;
   };
   checkpointCount: number;
+  checkpoints?: TrackCheckpoint[];
 }
 
 export interface ValidationResult<T> {

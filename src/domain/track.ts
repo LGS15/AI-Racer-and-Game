@@ -145,13 +145,15 @@ export function closestPointOnTrack(compiled: CompiledTrack, point: Vec2): Close
     const toPoint = sub(point, projection.point);
     const lateralOffset = dot(toPoint, sample.normal);
     const halfWidth = sample.width / 2;
+    const distanceToCenter = projection.distance;
     const candidate: ClosestTrackPoint = {
       ...sample,
       segmentIndex: segment.index,
       segmentT: projection.t,
+      offset: distanceToCenter > 0.000001 ? normalize(toPoint) : sample.normal,
       lateralOffset,
-      distanceToCenter: Math.abs(lateralOffset),
-      onTrack: Math.abs(lateralOffset) <= halfWidth
+      distanceToCenter,
+      onTrack: distanceToCenter <= halfWidth
     };
 
     if (!best || candidate.distanceToCenter < best.distanceToCenter) {
@@ -167,7 +169,7 @@ export function closestPointOnTrack(compiled: CompiledTrack, point: Vec2): Close
 
 export function isPointOnTrack(compiled: CompiledTrack, point: Vec2, margin = 0): boolean {
   const closest = closestPointOnTrack(compiled, point);
-  return Math.abs(closest.lateralOffset) <= closest.width / 2 - margin;
+  return closest.distanceToCenter <= closest.width / 2 - margin;
 }
 
 export function validateTrackJson(input: unknown): ValidationResult<TrackJson> {
@@ -305,6 +307,54 @@ export function updateTrackPointWidth(track: TrackJson, pointId: string, width: 
       point.id === pointId ? { ...point, width: clamp(width, MIN_TRACK_WIDTH, MAX_TRACK_WIDTH) } : point
     )
   };
+}
+
+export function clearTrackPointWidth(track: TrackJson, pointId: string): TrackJson {
+  return {
+    ...track,
+    centerline: track.centerline.map((point) => {
+      if (point.id !== pointId) return point;
+      const { width: _width, ...rest } = point;
+      return rest;
+    })
+  };
+}
+
+export function getTrackPointNormal(points: TrackPoint[], index: number): Vec2 {
+  const point = points[index];
+  const previous = points[(index - 1 + points.length) % points.length];
+  const next = points[(index + 1) % points.length];
+  const incoming = normalize(sub(point, previous));
+  const outgoing = normalize(sub(next, point));
+  const normal = normalize({
+    x: rightNormal(incoming).x + rightNormal(outgoing).x,
+    y: rightNormal(incoming).y + rightNormal(outgoing).y
+  });
+  return Number.isFinite(normal.x) && Number.isFinite(normal.y) ? normal : rightNormal(outgoing);
+}
+
+export function getTrackPointBarriers(track: TrackJson) {
+  return track.centerline.map((point, index) => {
+    const normal = getTrackPointNormal(track.centerline, index);
+    const width = point.width ?? track.globalWidth;
+    const halfWidth = width / 2;
+    return {
+      index,
+      point,
+      normal,
+      width,
+      halfWidth,
+      usesGlobalWidth: point.width === undefined,
+      left: {
+        x: point.x - normal.x * halfWidth,
+        y: point.y - normal.y * halfWidth
+      },
+      right: {
+        x: point.x + normal.x * halfWidth,
+        y: point.y + normal.y * halfWidth
+      }
+    };
+  });
 }
 
 export function removeTrackPoint(track: TrackJson, pointId: string): TrackJson {

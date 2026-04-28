@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { ReferenceLineAgent, manualActionFromInput } from './agents';
 import {
   addCheckpoint,
+  closestPointOnTrack,
   compileTrack,
   createDefaultTrack,
   getCheckpointTargets,
   getCheckpoints,
+  getTrackPointBarriers,
   hashTrack,
   moveCheckpoint,
   updateTrackPointWidth,
@@ -64,6 +66,32 @@ describe('track generation', () => {
     expect(withCheckpoint.checkpoints).toHaveLength(track.checkpointCount + 1);
     expect(moved.checkpoints?.[0].progress).not.toBe(0);
     expect(widened.centerline[0].width).toBe(188);
+  });
+
+  it('reports exact barrier endpoints for track points', () => {
+    const track = updateTrackPointWidth(createDefaultTrack(), 'p0', 188);
+    const [barrier] = getTrackPointBarriers(track);
+
+    expect(barrier.width).toBe(188);
+    expect(distanceBetween(barrier.left, barrier.right)).toBeCloseTo(188, 5);
+    expect(barrier.usesGlobalWidth).toBe(false);
+  });
+
+  it('does not treat points beyond a segment end as inside the track', () => {
+    const track = {
+      ...createDefaultTrack(),
+      globalWidth: 40,
+      centerline: [
+        { id: 'a', x: 0, y: 0 },
+        { id: 'b', x: 100, y: 0 },
+        { id: 'c', x: 100, y: 100 },
+        { id: 'd', x: 0, y: 100 }
+      ]
+    };
+    const closest = closestPointOnTrack(compileTrack(track), { x: 180, y: 0 });
+
+    expect(closest.distanceToCenter).toBeGreaterThan(track.globalWidth / 2);
+    expect(closest.onTrack).toBe(false);
   });
 });
 
@@ -137,6 +165,64 @@ describe('agents and replay', () => {
     expect(action.steer).toBeLessThanOrEqual(1);
   });
 
+  it('tries the opposite side when recovery does not improve the front ray', () => {
+    const compiled = compileTrack(createDefaultTrack());
+    const state = createInitialState(compiled);
+    const observation = buildObservation(state.car, compiled);
+    const agent = new ReferenceLineAgent();
+    const blockedObservation = {
+      ...observation,
+      rays: observation.rays.map((ray, index) => (index === Math.floor(observation.rays.length / 2) ? 40 : ray))
+    };
+
+    const firstAction = agent.step(blockedObservation, DEFAULT_SIM_CONFIG.fixedDt);
+    for (let index = 0; index < 26; index += 1) {
+      agent.step(blockedObservation, DEFAULT_SIM_CONFIG.fixedDt);
+    }
+    const fallbackAction = agent.step(blockedObservation, DEFAULT_SIM_CONFIG.fixedDt);
+
+    expect(firstAction.steer).toBeLessThan(0);
+    expect(firstAction.throttle).toBeLessThan(0.2);
+    expect(fallbackAction.steer).toBeGreaterThan(0);
+  });
+
+  it('starts recovery toward the clearer side', () => {
+    const compiled = compileTrack(createDefaultTrack());
+    const state = createInitialState(compiled);
+    const observation = buildObservation(state.car, compiled);
+    const centerIndex = Math.floor(observation.rays.length / 2);
+    const agent = new ReferenceLineAgent();
+    const blockedObservation = {
+      ...observation,
+      rays: observation.rays.map((ray, index) => {
+        if (index === centerIndex) return 40;
+        if (index === centerIndex - 2) return 32;
+        if (index === centerIndex + 2) return 180;
+        return ray;
+      })
+    };
+
+    const action = agent.step(blockedObservation, DEFAULT_SIM_CONFIG.fixedDt);
+
+    expect(action.steer).toBeGreaterThan(0);
+  });
+
+  it('does not enter recovery for a distant front ray drop', () => {
+    const compiled = compileTrack(createDefaultTrack());
+    const state = createInitialState(compiled);
+    const observation = buildObservation(state.car, compiled);
+    const centerIndex = Math.floor(observation.rays.length / 2);
+    const agent = new ReferenceLineAgent();
+    const openDropObservation = {
+      ...observation,
+      rays: observation.rays.map((ray, index) => (index === centerIndex ? 180 : ray))
+    };
+
+    const action = agent.step(openDropObservation, DEFAULT_SIM_CONFIG.fixedDt);
+
+    expect(action.throttle).toBeGreaterThan(0.2);
+  });
+
   it('records and validates replay JSON', () => {
     const track = createDefaultTrack();
     const compiled = compileTrack(track);
@@ -165,4 +251,8 @@ function runSequence(actions: AgentAction[]) {
     state = stepSimulation(state, action, compiled, DEFAULT_SIM_CONFIG.fixedDt);
   }
   return state;
+}
+
+function distanceBetween(a: { x: number; y: number }, b: { x: number; y: number }) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }

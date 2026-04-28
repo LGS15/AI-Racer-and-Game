@@ -101,16 +101,17 @@ export function stepSimulation(
   const trackEdge = Math.max(4, closest.width / 2 - config.carRadius);
   let collision = false;
 
-  if (Math.abs(closest.lateralOffset) > trackEdge) {
+  if (closest.distanceToCenter > trackEdge) {
     const side = Math.sign(closest.lateralOffset) || 1;
-    const correction = Math.abs(closest.lateralOffset) - trackEdge;
-    car.x -= closest.normal.x * side * correction;
-    car.y -= closest.normal.y * side * correction;
+    const outward = closest.distanceToCenter > 0.000001 ? closest.offset : scale(closest.normal, side);
+    const correction = closest.distanceToCenter - trackEdge;
+    car.x -= outward.x * correction;
+    car.y -= outward.y * correction;
     const velocity: Vec2 = { x: car.vx, y: car.vy };
-    const outwardVelocity = dot(velocity, scale(closest.normal, side));
+    const outwardVelocity = dot(velocity, outward);
     if (outwardVelocity > 0) {
-      car.vx -= closest.normal.x * side * outwardVelocity * 1.35;
-      car.vy -= closest.normal.y * side * outwardVelocity * 1.35;
+      car.vx -= outward.x * outwardVelocity * 1.35;
+      car.vy -= outward.y * outwardVelocity * 1.35;
     }
     car.vx *= 1 - clamp(config.offTrackDrag * dt, 0, 0.85);
     car.vy *= 1 - clamp(config.offTrackDrag * dt, 0, 0.85);
@@ -120,7 +121,7 @@ export function stepSimulation(
   const correctedClosest = closestPointOnTrack(compiled, car);
   const previousProgress = car.progressDistance;
   car.progressDistance = correctedClosest.progressDistance;
-  car.offTrack = Math.abs(correctedClosest.lateralOffset) > trackEdge;
+  car.offTrack = correctedClosest.distanceToCenter > trackEdge;
 
   const elapsed = state.elapsed + dt;
   car.lapTime = elapsed - state.lapStartTime;
@@ -197,7 +198,7 @@ function castRay(car: CarState, angle: number, compiled: CompiledTrack, config: 
       y: car.y + direction.y * distanceValue
     };
     const closest = closestPointOnTrack(compiled, point);
-    if (Math.abs(closest.lateralOffset) > closest.width / 2 - config.carRadius * 0.45) {
+    if (closest.distanceToCenter > closest.width / 2 - config.carRadius * 0.45) {
       return distanceValue;
     }
   }

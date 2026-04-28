@@ -16,20 +16,36 @@ import {
   Ruler,
   Save,
   Trash2,
-  Upload
+  Upload,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-react';
 import RacingCanvas, { deleteSelectedCheckpoint, deleteSelectedPoint } from './components/RacingCanvas';
 import { ReplayCharts } from './components/Charts';
+import { bundledTracks } from './data/tracks';
 import { ReferenceLineAgent, getAgentLabel, manualActionFromInput } from './domain/agents';
 import { DEFAULT_SIM_CONFIG, buildObservation, createInitialState, stepSimulation } from './domain/simulation';
-import { compileTrack, createDefaultTrack, getCheckpointTargets, hashTrack, validateTrackJson } from './domain/track';
+import {
+  clearTrackPointWidth,
+  compileTrack,
+  createDefaultTrack,
+  getCheckpointTargets,
+  getTrackPointBarriers,
+  hashTrack,
+  updateTrackPoint,
+  updateTrackPointWidth,
+  validateTrackJson
+} from './domain/track';
 import { createReplayBuilder, finalizeReplay, recordReplayFrame, sampleReplayFrame, validateReplayJson } from './domain/replay';
-import type { AgentAction, AgentObservation, Mode, ReplayJson, SimulationState, TrackJson } from './domain/types';
+import type { AgentAction, AgentObservation, Mode, ReplayJson, SimulationState, TrackJson, Vec2 } from './domain/types';
 
 type AgentKind = 'manual' | 'reference';
 type EditorTool = 'select' | 'insert' | 'checkpoint' | 'barrier';
 
 const seed = 1;
+const MIN_TRACK_ZOOM = 0.25;
+const MAX_TRACK_ZOOM = 2;
+const TRACK_ZOOM_STEP = 0.05;
 
 export default function App() {
   const [track, setTrack] = useState<TrackJson>(() => createDefaultTrack());
@@ -43,6 +59,7 @@ export default function App() {
   const [editorTool, setEditorTool] = useState<EditorTool>('select');
   const [selectedPointId, setSelectedPointId] = useState<string | undefined>();
   const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | undefined>();
+  const [trackZoom, setTrackZoom] = useState(1);
   const [notice, setNotice] = useState('');
   const compiled = useMemo(() => {
     try {
@@ -52,6 +69,11 @@ export default function App() {
     }
   }, [track]);
   const checkpointTargets = useMemo(() => (compiled ? getCheckpointTargets(compiled) : []), [compiled]);
+  const barriers = useMemo(() => getTrackPointBarriers(track), [track]);
+  const selectedBarrier = useMemo(
+    () => barriers.find((barrier) => barrier.point.id === selectedPointId) ?? barriers[0],
+    [barriers, selectedPointId]
+  );
 
   const initialState = useMemo(() => (compiled ? createInitialState(compiled, DEFAULT_SIM_CONFIG, seed) : undefined), [compiled]);
   const [snapshot, setSnapshot] = useState<SimulationState | undefined>(initialState);
@@ -71,6 +93,13 @@ export default function App() {
   const replayImportRef = useRef<HTMLInputElement | null>(null);
 
   const replayTrackMismatch = replay ? replay.trackHash !== hashTrack(track) : false;
+  const bundledTrackId = useMemo(() => {
+    const currentHash = hashTrack(track);
+    return bundledTracks.find((candidate) => {
+      const result = validateTrackJson(candidate.data);
+      return result.ok && result.value ? hashTrack(result.value) === currentHash : false;
+    })?.id;
+  }, [track]);
 
   const resetRun = useCallback(
     (stopReplay = true) => {
@@ -269,11 +298,62 @@ export default function App() {
     setTrack((current) => ({ ...current, ...patch }));
   }
 
+  function loadBundledTrack(trackId: string) {
+    const bundled = bundledTracks.find((candidate) => candidate.id === trackId);
+    if (!bundled) return;
+    const result = validateTrackJson(JSON.parse(JSON.stringify(bundled.data)) as unknown);
+    if (!result.ok || !result.value) {
+      setNotice(result.errors.join(' '));
+      return;
+    }
+    setTrack(result.value);
+    setSelectedPointId(undefined);
+    setSelectedCheckpointId(undefined);
+    setEditorTool('barrier');
+    setMode('edit');
+    setNotice(`${result.value.metadata.name} loaded.`);
+  }
+
   function setStartAtSelectedPoint() {
     if (!selectedPointId) return;
     const pointIndex = track.centerline.findIndex((point) => point.id === selectedPointId);
     if (pointIndex < 0) return;
     setTrack((current) => ({ ...current, start: { ...current.start, pointIndex } }));
+  }
+
+  function selectBarrierPoint(pointId: string) {
+    setSelectedPointId(pointId);
+    setSelectedCheckpointId(undefined);
+    setEditorTool('barrier');
+    setMode('edit');
+  }
+
+  function updateBarrierPoint(pointId: string, patch: { x?: number; y?: number; width?: number }) {
+    setTrack((current) => {
+      const point = current.centerline.find((candidate) => candidate.id === pointId);
+      if (!point) return current;
+      let next = current;
+      const x = patch.x ?? point.x;
+      const y = patch.y ?? point.y;
+      if ((patch.x !== undefined || patch.y !== undefined) && Number.isFinite(x) && Number.isFinite(y)) {
+        next = updateTrackPoint(next, pointId, {
+          x,
+          y
+        });
+      }
+      if (patch.width !== undefined && Number.isFinite(patch.width)) {
+        next = updateTrackPointWidth(next, pointId, patch.width);
+      }
+      return next;
+    });
+  }
+
+  function inheritBarrierWidth(pointId: string) {
+    setTrack((current) => clearTrackPointWidth(current, pointId));
+  }
+
+  function setClampedTrackZoom(value: number) {
+    setTrackZoom(Math.min(MAX_TRACK_ZOOM, Math.max(MIN_TRACK_ZOOM, value)));
   }
 
   return (
@@ -312,6 +392,7 @@ export default function App() {
             observation={observation}
             replay={mode === 'analyze' ? replay : undefined}
             replayTime={replayTime}
+            displayZoom={trackZoom}
             selectedPointId={selectedPointId}
             selectedCheckpointId={selectedCheckpointId}
             editorTool={editorTool}
@@ -319,6 +400,45 @@ export default function App() {
             onSelectPoint={setSelectedPointId}
             onSelectCheckpoint={setSelectedCheckpointId}
           />
+          <div className="canvasControls" aria-label="Track display zoom">
+            <button
+              className="iconButton compact"
+              onClick={() => setClampedTrackZoom(trackZoom - TRACK_ZOOM_STEP)}
+              disabled={trackZoom <= MIN_TRACK_ZOOM}
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
+              <ZoomOut size={16} />
+            </button>
+            <input
+              type="range"
+              min={MIN_TRACK_ZOOM}
+              max={MAX_TRACK_ZOOM}
+              step={TRACK_ZOOM_STEP}
+              value={trackZoom}
+              onChange={(event) => setClampedTrackZoom(Number(event.target.value))}
+              aria-label="Track zoom"
+            />
+            <strong>{Math.round(trackZoom * 100)}%</strong>
+            <button
+              className="iconButton compact"
+              onClick={() => setClampedTrackZoom(trackZoom + TRACK_ZOOM_STEP)}
+              disabled={trackZoom >= MAX_TRACK_ZOOM}
+              title="Zoom in"
+              aria-label="Zoom in"
+            >
+              <ZoomIn size={16} />
+            </button>
+            <button
+              className="iconButton compact"
+              onClick={() => setClampedTrackZoom(1)}
+              disabled={trackZoom === 1}
+              title="Reset zoom"
+              aria-label="Reset zoom"
+            >
+              <RotateCcw size={16} />
+            </button>
+          </div>
           <div className="timelinePanel">
             {mode === 'analyze' && replay ? (
               <>
@@ -417,6 +537,17 @@ export default function App() {
               />
             </label>
             <label className="field">
+              <span>Saved track</span>
+              <select value={bundledTrackId ?? ''} onChange={(event) => loadBundledTrack(event.target.value)}>
+                <option value="">Custom / current</option>
+                {bundledTracks.map((bundled) => (
+                  <option key={bundled.id} value={bundled.id}>
+                    {bundled.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
               <span>Width</span>
               <input
                 type="range"
@@ -493,6 +624,87 @@ export default function App() {
             ) : null}
           </section>
 
+          {mode === 'edit' ? (
+            <section className="panelSection barrierPanel">
+              <div className="sectionHeader">
+                <h2>Barriers</h2>
+                <strong className="sectionMeta">{barriers.length} points</strong>
+              </div>
+              {selectedBarrier ? (
+                <>
+                  <div className="barrierDetailHeader">
+                    <span>Selected</span>
+                    <strong>#{selectedBarrier.index + 1}</strong>
+                    <button
+                      className="miniButton"
+                      onClick={() => inheritBarrierWidth(selectedBarrier.point.id)}
+                      disabled={selectedBarrier.usesGlobalWidth}
+                      title="Use global width"
+                    >
+                      Global
+                    </button>
+                  </div>
+                  <div className="barrierGrid">
+                    <label>
+                      <span>X</span>
+                      <input
+                        type="number"
+                        value={formatInputNumber(selectedBarrier.point.x)}
+                        onFocus={() => selectBarrierPoint(selectedBarrier.point.id)}
+                        onChange={(event) => updateBarrierPoint(selectedBarrier.point.id, { x: Number(event.target.value) })}
+                      />
+                    </label>
+                    <label>
+                      <span>Y</span>
+                      <input
+                        type="number"
+                        value={formatInputNumber(selectedBarrier.point.y)}
+                        onFocus={() => selectBarrierPoint(selectedBarrier.point.id)}
+                        onChange={(event) => updateBarrierPoint(selectedBarrier.point.id, { y: Number(event.target.value) })}
+                      />
+                    </label>
+                    <label>
+                      <span>Width</span>
+                      <input
+                        type="number"
+                        min={40}
+                        max={260}
+                        step={1}
+                        value={formatInputNumber(selectedBarrier.width)}
+                        onFocus={() => selectBarrierPoint(selectedBarrier.point.id)}
+                        onChange={(event) => updateBarrierPoint(selectedBarrier.point.id, { width: Number(event.target.value) })}
+                      />
+                    </label>
+                  </div>
+                  <div className="edgeReadout">
+                    <div>
+                      <span>Left</span>
+                      <strong>{formatPoint(selectedBarrier.left)}</strong>
+                    </div>
+                    <div>
+                      <span>Right</span>
+                      <strong>{formatPoint(selectedBarrier.right)}</strong>
+                    </div>
+                  </div>
+                </>
+              ) : null}
+              <div className="barrierList" aria-label="Barrier control points">
+                {barriers.map((barrier) => (
+                  <button
+                    key={barrier.point.id}
+                    className={barrier.point.id === selectedBarrier?.point.id ? 'barrierRow active' : 'barrierRow'}
+                    onClick={() => selectBarrierPoint(barrier.point.id)}
+                  >
+                    <span>#{barrier.index + 1}</span>
+                    <strong>{Math.round(barrier.width)}px</strong>
+                    <small>L {formatPoint(barrier.left)}</small>
+                    <small>R {formatPoint(barrier.right)}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           <section className="panelSection">
             <div className="sectionHeader">
               <h2>Replay</h2>
@@ -560,4 +772,12 @@ function downloadJson(filename: string, data: unknown) {
 
 function safeFileName(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '') || 'track';
+}
+
+function formatInputNumber(value: number): string {
+  return Number.isFinite(value) ? String(Math.round(value * 10) / 10) : '0';
+}
+
+function formatPoint(point: Vec2): string {
+  return `${formatInputNumber(point.x)}, ${formatInputNumber(point.y)}`;
 }

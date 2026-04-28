@@ -70,6 +70,7 @@ export interface TrackSample {
 export interface ClosestTrackPoint extends TrackSample {
   segmentIndex: number;
   segmentT: number;
+  offset: Vec2;
   lateralOffset: number;
   distanceToCenter: number;
   onTrack: boolean;

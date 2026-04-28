@@ -6,6 +6,8 @@ import {
   compileTrack,
   getCheckpointTargets,
   getCheckpoints,
+  getTrackPointBarriers,
+  getTrackPointNormal,
   insertPointAfterNearestSegment,
   moveCheckpoint,
   removeCheckpoint,
@@ -34,6 +36,7 @@ interface RacingCanvasProps {
   observation?: AgentObservation;
   replay?: ReplayJson;
   replayTime: number;
+  displayZoom: number;
   selectedPointId?: string;
   selectedCheckpointId?: string;
   editorTool: EditorTool;
@@ -58,6 +61,7 @@ export default function RacingCanvas({
   observation,
   replay,
   replayTime,
+  displayZoom,
   selectedPointId,
   selectedCheckpointId,
   editorTool,
@@ -80,7 +84,7 @@ export default function RacingCanvas({
 
   useEffect(() => {
     draw();
-  }, [mode, track, compiled, car, observation, replay, replayTime, selectedPointId, selectedCheckpointId, editorTool]);
+  }, [mode, track, compiled, car, observation, replay, replayTime, displayZoom, selectedPointId, selectedCheckpointId, editorTool]);
 
   function draw() {
     const canvas = canvasRef.current;
@@ -100,7 +104,7 @@ export default function RacingCanvas({
     ctx.fillStyle = '#1d2c22';
     ctx.fillRect(0, 0, rect.width, rect.height);
 
-    const viewport = getViewport(rect.width, rect.height);
+    const viewport = getViewport(rect.width, rect.height, displayZoom);
     ctx.save();
     ctx.translate(viewport.offsetX, viewport.offsetY);
     ctx.scale(viewport.scale, viewport.scale);
@@ -210,7 +214,7 @@ export default function RacingCanvas({
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
     const rect = canvas.getBoundingClientRect();
-    const viewport = getViewport(rect.width, rect.height);
+    const viewport = getViewport(rect.width, rect.height, displayZoom);
     return {
       x: (event.clientX - rect.left - viewport.offsetX) / viewport.scale,
       y: (event.clientY - rect.top - viewport.offsetY) / viewport.scale
@@ -250,8 +254,8 @@ export function deleteSelectedCheckpoint(track: TrackJson, compiled: CompiledTra
   return compiled && checkpointId ? removeCheckpoint(track, compiled, checkpointId) : track;
 }
 
-function getViewport(width: number, height: number): Viewport {
-  const scale = Math.min(width / WORLD_WIDTH, height / WORLD_HEIGHT);
+function getViewport(width: number, height: number, displayZoom: number): Viewport {
+  const scale = Math.min(width / WORLD_WIDTH, height / WORLD_HEIGHT) * Math.max(0.1, displayZoom);
   const viewWidth = WORLD_WIDTH * scale;
   const viewHeight = WORLD_HEIGHT * scale;
   return {
@@ -464,44 +468,37 @@ function drawEditor(
 }
 
 function drawTrackBand(ctx: CanvasRenderingContext2D, compiled: CompiledTrack, widthOffset: number, fillStyle: string) {
-  const edges = getTrackEdges(compiled.source.centerline, compiled.source.globalWidth, widthOffset);
-  if (edges.left.length < 3 || edges.right.length < 3) return;
+  const points = compiled.source.centerline;
+  if (points.length < 3) return;
   ctx.save();
   ctx.fillStyle = fillStyle;
-  ctx.beginPath();
-  edges.left.forEach((point, index) => {
-    if (index === 0) ctx.moveTo(point.x, point.y);
-    else ctx.lineTo(point.x, point.y);
+  points.forEach((point, index) => {
+    const next = points[(index + 1) % points.length];
+    const normal = rightNormal(normalize(sub(next, point)));
+    const halfA = Math.max(6, ((point.width ?? compiled.source.globalWidth) + widthOffset) / 2);
+    const halfB = Math.max(6, ((next.width ?? compiled.source.globalWidth) + widthOffset) / 2);
+    ctx.beginPath();
+    ctx.moveTo(point.x - normal.x * halfA, point.y - normal.y * halfA);
+    ctx.lineTo(next.x - normal.x * halfB, next.y - normal.y * halfB);
+    ctx.lineTo(next.x + normal.x * halfB, next.y + normal.y * halfB);
+    ctx.lineTo(point.x + normal.x * halfA, point.y + normal.y * halfA);
+    ctx.closePath();
+    ctx.fill();
   });
-  for (let index = edges.right.length - 1; index >= 0; index -= 1) {
-    const point = edges.right[index];
-    ctx.lineTo(point.x, point.y);
+  for (const point of points) {
+    const radius = Math.max(6, ((point.width ?? compiled.source.globalWidth) + widthOffset) / 2);
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    ctx.fill();
   }
-  ctx.closePath();
-  ctx.fill();
   ctx.restore();
 }
 
-function getTrackEdges(points: TrackPoint[], globalWidth: number, widthOffset = 0): { left: Vec2[]; right: Vec2[] } {
-  return points.reduce<{ left: Vec2[]; right: Vec2[] }>(
-    (edges, point, index) => {
-      const normal = getPointNormal(points, index);
-      const halfWidth = Math.max(6, ((point.width ?? globalWidth) + widthOffset) / 2);
-      edges.left.push({ x: point.x - normal.x * halfWidth, y: point.y - normal.y * halfWidth });
-      edges.right.push({ x: point.x + normal.x * halfWidth, y: point.y + normal.y * halfWidth });
-      return edges;
-    },
-    { left: [], right: [] }
-  );
-}
-
 function getBarrierHandles(track: TrackJson): Array<{ point: TrackPoint; side: -1 | 1; position: Vec2 }> {
-  return track.centerline.flatMap((point, index) => {
-    const normal = getPointNormal(track.centerline, index);
-    const halfWidth = (point.width ?? track.globalWidth) / 2;
+  return getTrackPointBarriers(track).flatMap((barrier) => {
     return [
-      { point, side: -1 as const, position: { x: point.x - normal.x * halfWidth, y: point.y - normal.y * halfWidth } },
-      { point, side: 1 as const, position: { x: point.x + normal.x * halfWidth, y: point.y + normal.y * halfWidth } }
+      { point: barrier.point, side: -1 as const, position: barrier.left },
+      { point: barrier.point, side: 1 as const, position: barrier.right }
     ];
   });
 }
@@ -523,21 +520,9 @@ function updatePointWidthFromWorld(track: TrackJson, pointId: string, world: Vec
   const index = track.centerline.findIndex((point) => point.id === pointId);
   if (index < 0) return track;
   const point = track.centerline[index];
-  const normal = getPointNormal(track.centerline, index);
+  const normal = getTrackPointNormal(track.centerline, index);
   const offset = Math.abs(dot(sub(world, point), normal));
   return updateTrackPointWidth(track, pointId, offset * 2);
-}
-
-function getPointNormal(points: TrackPoint[], index: number): Vec2 {
-  const point = points[index];
-  const previous = points[(index - 1 + points.length) % points.length];
-  const next = points[(index + 1) % points.length];
-  const incoming = normalize(sub(point, previous));
-  const outgoing = normalize(sub(next, point));
-  return normalize({
-    x: rightNormal(incoming).x + rightNormal(outgoing).x,
-    y: rightNormal(incoming).y + rightNormal(outgoing).y
-  });
 }
 
 function nearestCheckpoint(compiled: CompiledTrack, target: Vec2, maxDistance = Number.POSITIVE_INFINITY) {

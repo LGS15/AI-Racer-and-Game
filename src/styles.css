@@ -32,7 +32,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -148,6 +149,7 @@ button.active,
 
 .canvasColumn {
   min-width: 0;
+  position: relative;
   display: grid;
   grid-template-rows: minmax(420px, 1fr) auto;
   gap: 12px;
@@ -186,6 +188,43 @@ button.active,
   background: #f0a72f;
   color: #111111;
   border: 1px solid rgba(0, 0, 0, 0.18);
+}
+
+.canvasControls {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 30px minmax(92px, 150px) 48px 30px 30px;
+  align-items: center;
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(20, 28, 22, 0.82);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(8px);
+}
+
+.canvasControls .compact {
+  width: 30px;
+  height: 30px;
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.canvasControls input[type='range'] {
+  width: 100%;
+  min-width: 0;
+}
+
+.canvasControls strong {
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .timelinePanel {
@@ -239,6 +278,11 @@ button.active,
   color: #514b40;
 }
 
+.sectionMeta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .iconButton,
 .editTools button {
   width: 38px;
@@ -290,11 +334,13 @@ button.active,
 }
 
 .field input[type='text'],
-.field input:not([type]) {
+.field input:not([type]),
+.field select {
   width: 100%;
 }
 
-.field input {
+.field input,
+.field select {
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -315,6 +361,117 @@ button.active,
 
 .editTools button {
   width: auto;
+}
+
+.barrierPanel {
+  min-width: 0;
+}
+
+.barrierDetailHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.barrierDetailHeader span,
+.barrierGrid span,
+.edgeReadout span,
+.barrierRow span,
+.barrierRow small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.miniButton {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.barrierGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.barrierGrid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.barrierGrid input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 8px;
+  background: #ffffff;
+  color: var(--ink);
+}
+
+.edgeReadout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.edgeReadout div {
+  min-width: 0;
+  border: 1px solid #e5dece;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fbf8f0;
+}
+
+.edgeReadout strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.barrierList {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 12px;
+  padding-right: 3px;
+}
+
+.barrierRow {
+  display: grid;
+  grid-template-columns: 34px 58px minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 6px 7px;
+  text-align: left;
+}
+
+.barrierRow.active {
+  border-color: var(--green);
+  background: rgba(42, 139, 109, 0.12);
+}
+
+.barrierRow strong {
+  font-size: 13px;
+}
+
+.barrierRow small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
 }
 
 .statusLine {

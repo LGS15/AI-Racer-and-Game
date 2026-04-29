@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   Bot,
   CircleDot,
   Download,
@@ -496,19 +500,21 @@ export default function App() {
             {agentKind === 'manual' ? (
               <div className="drivePad" aria-label="Manual controls">
                 {[
-                  ['ArrowLeft', '←'],
-                  ['ArrowUp', '↑'],
-                  ['ArrowDown', '↓'],
-                  ['ArrowRight', '→']
-                ].map(([code, label]) => (
+                  { code: 'ArrowLeft', Icon: ArrowLeft, label: 'Steer left' },
+                  { code: 'ArrowUp', Icon: ArrowUp, label: 'Throttle' },
+                  { code: 'ArrowDown', Icon: ArrowDown, label: 'Brake' },
+                  { code: 'ArrowRight', Icon: ArrowRight, label: 'Steer right' }
+                ].map(({ code, Icon, label }) => (
                   <button
                     key={code}
                     className={heldControlsView.includes(code) ? 'active' : ''}
                     onPointerDown={() => holdControl(code, true)}
                     onPointerUp={() => holdControl(code, false)}
                     onPointerLeave={() => holdControl(code, false)}
+                    title={label}
+                    aria-label={label}
                   >
-                    {label}
+                    <Icon size={18} />
                   </button>
                 ))}
               </div>

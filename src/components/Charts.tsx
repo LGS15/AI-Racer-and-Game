@@ -65,21 +65,21 @@ export function ActionChart({ replay }: { replay?: ReplayJson }) {
       </div>
       <svg className="chartSvg actionChart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Agent actions">
         <path d={`M 0 ${height / 2} H ${width}`} className="chartAxis" />
-        <polyline points={line(actions.throttle, -1, 1)} fill="none" stroke="#2aa876" strokeWidth="3" strokeLinecap="round" />
-        <polyline points={line(actions.brake, -1, 1)} fill="none" stroke="#c04f48" strokeWidth="3" strokeLinecap="round" />
-        <polyline points={line(actions.steer, -1, 1)} fill="none" stroke="#d89b22" strokeWidth="3" strokeLinecap="round" />
+        <polyline points={line(actions.throttle, -1, 1)} fill="none" stroke="#12a574" strokeWidth="3" strokeLinecap="round" />
+        <polyline points={line(actions.brake, -1, 1)} fill="none" stroke="#e43d52" strokeWidth="3" strokeLinecap="round" />
+        <polyline points={line(actions.steer, -1, 1)} fill="none" stroke="#d8ff2f" strokeWidth="3" strokeLinecap="round" />
       </svg>
       <div className="legend">
         <span>
-          <i style={{ background: '#2aa876' }} />
+          <i style={{ background: '#12a574' }} />
           Throttle
         </span>
         <span>
-          <i style={{ background: '#c04f48' }} />
+          <i style={{ background: '#e43d52' }} />
           Brake
         </span>
         <span>
-          <i style={{ background: '#d89b22' }} />
+          <i style={{ background: '#d8ff2f' }} />
           Steer
         </span>
       </div>
@@ -118,9 +118,9 @@ export function ReplayCharts({ replay }: { replay?: ReplayJson }) {
   return (
     <div className="analysisStack">
       <ReplayStats replay={replay} />
-      <MiniLineChart title="Speed" values={speeds} color="#2f7fbc" max={540} suffix=" px/s" />
+      <MiniLineChart title="Speed" values={speeds} color="#00b8df" max={540} suffix=" px/s" />
       <ActionChart replay={replay} />
-      <MiniLineChart title="Lap Times" values={lapTimes} color="#7f5bb8" suffix="s" />
+      <MiniLineChart title="Lap Times" values={lapTimes} color="#725cff" suffix="s" />
     </div>
   );
 }

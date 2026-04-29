@@ -21,6 +21,20 @@ import type { AgentObservation, CarState, CompiledTrack, Mode, ReplayJson, Track
 
 const WORLD_WIDTH = 1200;
 const WORLD_HEIGHT = 800;
+const CANVAS_COLORS = {
+  world: '#e9f2f8',
+  grid: 'rgba(16, 31, 48, 0.08)',
+  gridMajor: 'rgba(0, 184, 223, 0.22)',
+  trackOuter: '#07111c',
+  trackShoulder: '#f8fcff',
+  trackLane: '#121826',
+  cyan: '#00b8df',
+  cyanBright: '#00d6ff',
+  yellow: '#d8ff2f',
+  red: '#e43d52',
+  green: '#12a574',
+  ink: '#10131a'
+};
 
 type EditorTool = 'select' | 'insert' | 'checkpoint' | 'barrier';
 type DragTarget =
@@ -101,7 +115,7 @@ export default function RacingCanvas({
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    ctx.fillStyle = '#1d2c22';
+    ctx.fillStyle = CANVAS_COLORS.world;
     ctx.fillRect(0, 0, rect.width, rect.height);
 
     const viewport = getViewport(rect.width, rect.height, displayZoom);
@@ -113,7 +127,7 @@ export default function RacingCanvas({
       drawTrack(ctx, compiled);
       drawReplay(ctx, replay, replayTime);
       if (car && mode !== 'analyze') drawSensors(ctx, car, observation);
-      if (car && mode !== 'analyze') drawCar(ctx, car, '#e4574f', '#ffffff');
+      if (car && mode !== 'analyze') drawCar(ctx, car, CANVAS_COLORS.red, CANVAS_COLORS.yellow);
       if (mode === 'edit') drawEditor(ctx, compiled, track, selectedPointId, selectedCheckpointId, editorTool);
     }
     ctx.restore();
@@ -268,22 +282,26 @@ function getViewport(width: number, height: number, displayZoom: number): Viewpo
 }
 
 function drawWorld(ctx: CanvasRenderingContext2D) {
-  ctx.fillStyle = '#243928';
+  ctx.fillStyle = CANVAS_COLORS.world;
   ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
   ctx.lineWidth = 1;
-  for (let x = 0; x <= WORLD_WIDTH; x += 50) {
+  for (let x = 0; x <= WORLD_WIDTH; x += 25) {
+    ctx.strokeStyle = x % 100 === 0 ? CANVAS_COLORS.gridMajor : CANVAS_COLORS.grid;
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, WORLD_HEIGHT);
     ctx.stroke();
   }
-  for (let y = 0; y <= WORLD_HEIGHT; y += 50) {
+  for (let y = 0; y <= WORLD_HEIGHT; y += 25) {
+    ctx.strokeStyle = y % 100 === 0 ? CANVAS_COLORS.gridMajor : CANVAS_COLORS.grid;
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(WORLD_WIDTH, y);
     ctx.stroke();
   }
+  ctx.strokeStyle = 'rgba(16, 19, 26, 0.42)';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 }
 
 function drawTrack(ctx: CanvasRenderingContext2D, compiled: CompiledTrack) {
@@ -293,13 +311,13 @@ function drawTrack(ctx: CanvasRenderingContext2D, compiled: CompiledTrack) {
     else path.lineTo(point.x, point.y);
   });
   path.closePath();
-  drawTrackBand(ctx, compiled, 22, '#191916');
-  drawTrackBand(ctx, compiled, 0, '#5a5953');
-  drawTrackBand(ctx, compiled, -20, '#3f3e3a');
+  drawTrackBand(ctx, compiled, 24, CANVAS_COLORS.trackOuter);
+  drawTrackBand(ctx, compiled, 0, CANVAS_COLORS.trackShoulder);
+  drawTrackBand(ctx, compiled, -20, CANVAS_COLORS.trackLane);
   ctx.save();
-  ctx.setLineDash([22, 24]);
-  ctx.strokeStyle = 'rgba(245, 213, 112, 0.72)';
-  ctx.lineWidth = 4;
+  ctx.setLineDash([20, 22]);
+  ctx.strokeStyle = 'rgba(216, 255, 47, 0.76)';
+  ctx.lineWidth = 3;
   ctx.stroke(path);
   ctx.restore();
 
@@ -308,15 +326,15 @@ function drawTrack(ctx: CanvasRenderingContext2D, compiled: CompiledTrack) {
     const a = { x: checkpoint.point.x - checkpoint.normal.x * half, y: checkpoint.point.y - checkpoint.normal.y * half };
     const b = { x: checkpoint.point.x + checkpoint.normal.x * half, y: checkpoint.point.y + checkpoint.normal.y * half };
     ctx.save();
-    ctx.lineWidth = index === 0 ? 7 : 3;
-    ctx.strokeStyle = index === 0 ? '#ffffff' : 'rgba(255, 236, 160, 0.35)';
+    ctx.lineWidth = index === 0 ? 8 : 3;
+    ctx.strokeStyle = index === 0 ? CANVAS_COLORS.yellow : 'rgba(0, 184, 223, 0.55)';
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
     if (index === 0) {
       ctx.setLineDash([10, 10]);
-      ctx.strokeStyle = '#111111';
+      ctx.strokeStyle = CANVAS_COLORS.ink;
       ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
@@ -330,8 +348,16 @@ function drawTrack(ctx: CanvasRenderingContext2D, compiled: CompiledTrack) {
 function drawReplay(ctx: CanvasRenderingContext2D, replay: ReplayJson | undefined, replayTime: number) {
   if (!replay || replay.frames.length === 0) return;
   ctx.save();
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = 'rgba(0, 184, 223, 0.18)';
+  ctx.beginPath();
+  replay.frames.forEach((frame, index) => {
+    if (index === 0) ctx.moveTo(frame.x, frame.y);
+    else if (index % 2 === 0) ctx.lineTo(frame.x, frame.y);
+  });
+  ctx.stroke();
   ctx.lineWidth = 4;
-  ctx.strokeStyle = 'rgba(39, 185, 170, 0.45)';
+  ctx.strokeStyle = 'rgba(0, 214, 255, 0.78)';
   ctx.beginPath();
   replay.frames.forEach((frame, index) => {
     if (index === 0) ctx.moveTo(frame.x, frame.y);
@@ -339,7 +365,7 @@ function drawReplay(ctx: CanvasRenderingContext2D, replay: ReplayJson | undefine
   });
   ctx.stroke();
   const ghost = sampleReplayFrame(replay, replayTime);
-  if (ghost) drawCar(ctx, ghost, '#26b8aa', '#eafffb', 0.74);
+  if (ghost) drawCar(ctx, ghost, CANVAS_COLORS.cyan, '#f8fcff', 0.76);
   ctx.restore();
 }
 
@@ -350,7 +376,7 @@ function drawSensors(ctx: CanvasRenderingContext2D, car: CarState, observation?:
   observation.rayAngles.forEach((angle, index) => {
     const length = observation.rays[index] ?? DEFAULT_SIM_CONFIG.rayMaxDistance;
     const dir = fromAngle(car.heading + angle);
-    ctx.strokeStyle = index === Math.floor(observation.rays.length / 2) ? 'rgba(255, 222, 105, 0.78)' : 'rgba(255, 222, 105, 0.35)';
+    ctx.strokeStyle = index === Math.floor(observation.rays.length / 2) ? 'rgba(216, 255, 47, 0.82)' : 'rgba(216, 255, 47, 0.32)';
     ctx.beginPath();
     ctx.moveTo(car.x, car.y);
     ctx.lineTo(car.x + dir.x * length, car.y + dir.y * length);
@@ -370,15 +396,17 @@ function drawCar(
   ctx.globalAlpha = alpha;
   ctx.translate(car.x, car.y);
   ctx.rotate(car.heading);
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
-  ctx.fillRect(-17, -9, 38, 20);
+  ctx.fillStyle = 'rgba(0, 184, 223, 0.22)';
+  ctx.fillRect(-18, -10, 42, 22);
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+  ctx.fillRect(-15, -7, 38, 20);
   ctx.fillStyle = body;
-  roundedRect(ctx, -19, -10, 38, 20, 4);
+  roundedRect(ctx, -20, -10, 40, 20, 3);
   ctx.fill();
   ctx.fillStyle = stripe;
-  roundedRect(ctx, 0, -7, 13, 14, 3);
+  roundedRect(ctx, 0, -7, 13, 14, 2);
   ctx.fill();
-  ctx.fillStyle = '#202020';
+  ctx.fillStyle = CANVAS_COLORS.ink;
   ctx.fillRect(-13, -13, 8, 4);
   ctx.fillRect(-13, 9, 8, 4);
   ctx.fillRect(8, -13, 8, 4);
@@ -396,7 +424,7 @@ function drawEditor(
 ) {
   ctx.save();
   ctx.lineWidth = 2;
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+  ctx.strokeStyle = 'rgba(0, 184, 223, 0.72)';
   ctx.beginPath();
   track.centerline.forEach((point, index) => {
     if (index === 0) ctx.moveTo(point.x, point.y);
@@ -410,10 +438,10 @@ function drawEditor(
     const isStart = index === track.start.pointIndex;
     ctx.beginPath();
     ctx.arc(point.x, point.y, isSelected ? 13 : 9, 0, Math.PI * 2);
-    ctx.fillStyle = isSelected ? '#f0a72f' : isStart ? '#ffffff' : '#35b38a';
+    ctx.fillStyle = isSelected ? CANVAS_COLORS.yellow : isStart ? '#ffffff' : CANVAS_COLORS.green;
     ctx.fill();
     ctx.lineWidth = isStart ? 4 : 2;
-    ctx.strokeStyle = isStart ? '#e4574f' : '#123327';
+    ctx.strokeStyle = isStart ? CANVAS_COLORS.red : CANVAS_COLORS.ink;
     ctx.stroke();
   });
 
@@ -430,16 +458,16 @@ function drawEditor(
         y: checkpoint.sample.point.y + checkpoint.sample.normal.y * half
       };
       ctx.lineWidth = isSelected ? 6 : 4;
-      ctx.strokeStyle = isSelected ? '#f0a72f' : 'rgba(75, 190, 225, 0.9)';
+      ctx.strokeStyle = isSelected ? CANVAS_COLORS.yellow : 'rgba(0, 184, 223, 0.92)';
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
       ctx.beginPath();
       ctx.arc(checkpoint.sample.point.x, checkpoint.sample.point.y, isSelected ? 12 : 9, 0, Math.PI * 2);
-      ctx.fillStyle = isSelected ? '#f0a72f' : '#4bbee1';
+      ctx.fillStyle = isSelected ? CANVAS_COLORS.yellow : CANVAS_COLORS.cyanBright;
       ctx.fill();
-      ctx.strokeStyle = '#12313a';
+      ctx.strokeStyle = CANVAS_COLORS.ink;
       ctx.lineWidth = 2;
       ctx.stroke();
     }
@@ -450,17 +478,17 @@ function drawEditor(
       const isSelected = handle.point.id === selectedPointId;
       ctx.beginPath();
       ctx.arc(handle.position.x, handle.position.y, isSelected ? 9 : 7, 0, Math.PI * 2);
-      ctx.fillStyle = handle.side === 1 ? '#e4574f' : '#4bbee1';
+      ctx.fillStyle = handle.side === 1 ? CANVAS_COLORS.red : CANVAS_COLORS.cyanBright;
       ctx.fill();
       ctx.lineWidth = isSelected ? 3 : 2;
-      ctx.strokeStyle = '#1b1714';
+      ctx.strokeStyle = CANVAS_COLORS.ink;
       ctx.stroke();
     }
   }
 
   if (editorTool === 'insert') {
     ctx.setLineDash([12, 12]);
-    ctx.strokeStyle = 'rgba(240, 167, 47, 0.8)';
+    ctx.strokeStyle = 'rgba(216, 255, 47, 0.82)';
     ctx.lineWidth = 4;
     ctx.strokeRect(12, 12, WORLD_WIDTH - 24, WORLD_HEIGHT - 24);
   }

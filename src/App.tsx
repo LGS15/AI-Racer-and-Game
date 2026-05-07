@@ -12,6 +12,7 @@ import {
   Gauge,
   Keyboard,
   LineChart,
+  Network,
   Pause,
   Pencil,
   Play,
@@ -28,6 +29,7 @@ import RacingCanvas, { deleteSelectedCheckpoint, deleteSelectedPoint } from './c
 import { ReplayCharts } from './components/Charts';
 import { bundledTracks } from './data/tracks';
 import { ReferenceLineAgent, getAgentLabel, manualActionFromInput } from './domain/agents';
+import { ExternalAgent, type BridgeStatus } from './domain/ai/environmentBridge';
 import { DEFAULT_SIM_CONFIG, buildObservation, createInitialState, stepSimulation } from './domain/simulation';
 import {
   clearTrackPointWidth,
@@ -43,7 +45,7 @@ import {
 import { createReplayBuilder, finalizeReplay, recordReplayFrame, sampleReplayFrame, validateReplayJson } from './domain/replay';
 import type { AgentAction, AgentObservation, Mode, ReplayJson, SimulationState, TrackJson, Vec2 } from './domain/types';
 
-type AgentKind = 'manual' | 'reference';
+type AgentKind = 'manual' | 'reference' | 'external';
 type EditorTool = 'select' | 'insert' | 'checkpoint' | 'barrier';
 
 const seed = 1;
@@ -92,7 +94,10 @@ export default function App() {
   const heldControlsRef = useRef<Set<string>>(new Set());
   const [heldControlsView, setHeldControlsView] = useState<string[]>([]);
   const referenceAgentRef = useRef(new ReferenceLineAgent());
+  const externalAgentRef = useRef(new ExternalAgent());
   const replayBuilderRef = useRef<ReturnType<typeof createReplayBuilder> | null>(null);
+  const [wsUrl, setWsUrl] = useState('ws://localhost:8765');
+  const [wsStatus, setWsStatus] = useState<BridgeStatus>('disconnected');
   const trackImportRef = useRef<HTMLInputElement | null>(null);
   const replayImportRef = useRef<HTMLInputElement | null>(null);
 
@@ -117,12 +122,15 @@ export default function App() {
       setRunning(false);
       setRecording(false);
       replayBuilderRef.current = null;
-      referenceAgentRef.current.reset({
+      const agentContext = {
         track,
         seed,
         checkpointCount: track.checkpointCount,
         rayAngles: DEFAULT_SIM_CONFIG.rayAngles
-      });
+      };
+      referenceAgentRef.current.reset(agentContext);
+      externalAgentRef.current.setCompiledTrack(compiled);
+      externalAgentRef.current.reset(agentContext);
       if (stopReplay) {
         setReplayPlaying(false);
       }
@@ -133,6 +141,12 @@ export default function App() {
   useEffect(() => {
     resetRun(false);
   }, [resetRun, agentKind]);
+
+  useEffect(() => {
+    const agent = externalAgentRef.current;
+    agent.onStatusChange = setWsStatus;
+    agent.onResetRequest = () => resetRun();
+  }, [resetRun]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -175,10 +189,15 @@ export default function App() {
           const action =
             agentKind === 'manual'
               ? manualActionFromInput(keysRef.current, heldControlsRef.current)
+              : agentKind === 'external'
+              ? externalAgentRef.current.step(beforeObservation, DEFAULT_SIM_CONFIG.fixedDt)
               : referenceAgentRef.current.step(beforeObservation, DEFAULT_SIM_CONFIG.fixedDt);
           const next = stepSimulation(state, action, compiled, DEFAULT_SIM_CONFIG.fixedDt, DEFAULT_SIM_CONFIG);
           const didCollide = next.events.some((event) => event.type === 'collision');
           const afterObservation = buildObservation(next.car, compiled, DEFAULT_SIM_CONFIG, didCollide);
+          if (agentKind === 'external') {
+            externalAgentRef.current.onTransition(state, next, afterObservation, compiled);
+          }
           simRef.current = next;
           latestActionRef.current = action;
           latestObservationRef.current = afterObservation;
@@ -235,7 +254,8 @@ export default function App() {
       return;
     }
 
-    replayBuilderRef.current = createReplayBuilder(track, { id: agentKind, label: getAgentLabel(agentKind) }, seed, DEFAULT_SIM_CONFIG);
+    const agentLabel = agentKind === 'manual' ? 'Manual' : agentKind === 'external' ? 'External AI' : 'Reference';
+    replayBuilderRef.current = createReplayBuilder(track, { id: agentKind, label: agentLabel }, seed, DEFAULT_SIM_CONFIG);
     setRecording(true);
     setNotice('Recording started.');
   }
@@ -496,7 +516,33 @@ export default function App() {
                 <Bot size={17} />
                 Reference
               </button>
+              <button className={agentKind === 'external' ? 'active' : ''} onClick={() => setAgentKind('external')}>
+                <Network size={17} />
+                External
+              </button>
             </div>
+            {agentKind === 'external' ? (
+              <div className="externalPanel">
+                <input
+                  className="wsUrlInput"
+                  type="text"
+                  value={wsUrl}
+                  onChange={(e) => setWsUrl(e.target.value)}
+                  placeholder="ws://localhost:8765"
+                  disabled={wsStatus !== 'disconnected'}
+                  spellCheck={false}
+                />
+                <div className="externalPanelRow">
+                  <span className={`wsStatusDot wsStatus-${wsStatus}`} title={wsStatus} />
+                  <span className="wsStatusLabel">{wsStatus}</span>
+                  {wsStatus === 'disconnected' ? (
+                    <button className="wsConnectBtn" onClick={() => externalAgentRef.current.connect(wsUrl)}>Connect</button>
+                  ) : (
+                    <button className="wsConnectBtn" onClick={() => externalAgentRef.current.disconnect()}>Disconnect</button>
+                  )}
+                </div>
+              </div>
+            ) : null}
             {agentKind === 'manual' ? (
               <div className="drivePad" aria-label="Manual controls">
                 {[

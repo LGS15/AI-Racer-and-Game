@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Racing AI Guide — From Bicycle Physics to a Self-Driving Q-Network</title>
+<meta name="description" content="Step-by-step guide for building a reinforcement-learning racing AI on top of a 2D bicycle-model simulator." />
+<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" />
+</head>
+<body>
+
+<header class="hero">
+  <div class="inner">
+    <h1>Racing AI Guide<span class="accent">.</span></h1>
+    <p class="subtitle">From bicycle-model physics to a Deep Q-Network that learns to drive — built on the racing simulator in this repo.</p>
+    <p class="meta">Companion to the <code>DQN_GUIDE.md</code> in the project root. Code references point to files in <code>src/domain/</code>.</p>
+  </div>
+</header>
+
+<div class="layout">
+
+<aside class="toc">
+  <h2>Contents</h2>
+  <nav>
+    <ol>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#simulator">The Simulator</a></li>
+      <li><a href="#bicycle">Bicycle-Model Physics</a></li>
+      <li><a href="#tires">Tire Forces &amp; RWD</a></li>
+      <li><a href="#track">Track, Checkpoints, Rays</a></li>
+      <li><a href="#observation">Observation &amp; State Vector</a></li>
+      <li><a href="#actions">Discrete Action Space</a></li>
+      <li><a href="#protocol">TS &harr; Python Protocol</a></li>
+      <li><a href="#dqn">DQN: How It Learns</a></li>
+      <li><a href="#reward">Reward Design</a></li>
+      <li><a href="#training">Training Loop</a></li>
+      <li><a href="#debug">Debugging &amp; Next Steps</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+
+<!-- ===================== 1. Overview ===================== -->
+<section id="overview">
+  <span class="section-num">01</span>
+  <h2>Overview</h2>
+  <p>You're building a 2D top-down racing simulator <em>and</em> an AI that learns to drive it through reinforcement learning. The simulator is in TypeScript; the AI lives in Python; a thin protocol connects them.</p>
+
+  <p>The key idea behind this split: <strong>the simulator only has to know how to be a world.</strong> It doesn't know what algorithm is driving — DQN today, PPO or imitation learning tomorrow. That's why every algorithm-specific concept (replay buffers, optimizers, reward shaping) lives behind the protocol boundary in Python.</p>
+
+  <svg viewBox="0 0 600 220" class="diagram" aria-label="Architecture diagram showing TypeScript and Python sides connected by a protocol">
+    <defs>
+      <marker id="arrow-gray" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L9,3 z" fill="#666" />
+      </marker>
+    </defs>
+    <rect x="20" y="40" width="220" height="160" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="2" />
+    <text x="130" y="68" text-anchor="middle" font-weight="700" font-size="15">TypeScript</text>
+    <text x="130" y="86" text-anchor="middle" font-size="11" fill="#666">the world</text>
+    <text x="130" y="115" text-anchor="middle" font-size="13">Physics &amp; track</text>
+    <text x="130" y="135" text-anchor="middle" font-size="13">Observation building</text>
+    <text x="130" y="155" text-anchor="middle" font-size="13">Action execution</text>
+    <text x="130" y="175" text-anchor="middle" font-size="13">Rendering / replay</text>
+
+    <rect x="360" y="40" width="220" height="160" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="2" />
+    <text x="470" y="68" text-anchor="middle" font-weight="700" font-size="15">Python</text>
+    <text x="470" y="86" text-anchor="middle" font-size="11" fill="#666">the brain</text>
+    <text x="470" y="115" text-anchor="middle" font-size="13">DQN / policy</text>
+    <text x="470" y="135" text-anchor="middle" font-size="13">Replay buffer</text>
+    <text x="470" y="155" text-anchor="middle" font-size="13">Reward shaping</text>
+    <text x="470" y="175" text-anchor="middle" font-size="13">Model save / load</text>
+
+    <line x1="240" y1="100" x2="360" y2="100" stroke="#666" stroke-width="2" marker-end="url(#arrow-gray)" />
+    <line x1="360" y1="140" x2="240" y2="140" stroke="#666" stroke-width="2" marker-end="url(#arrow-gray)" />
+    <text x="300" y="92" text-anchor="middle" font-size="11" fill="#666">state, transition</text>
+    <text x="300" y="156" text-anchor="middle" font-size="11" fill="#666">action_index</text>
+    <text x="300" y="22" text-anchor="middle" font-size="11" fill="#888" font-style="italic">WebSocket protocol</text>
+  </svg>
+
+  <h3>What you'll build, in order</h3>
+  <ol>
+    <li><strong>A 2D simulator</strong> with realistic-ish car physics — bicycle model, slip angles, RWD power oversteer.</li>
+    <li><strong>An observation pipeline</strong> — what the agent perceives every frame: ray distances, kinematics, slip, lap progress.</li>
+    <li><strong>A discrete action table</strong> — seven combinations of throttle / brake / steer the agent can pick from.</li>
+    <li><strong>A protocol</strong> between TS and Python so the simulator and the brain are loosely coupled.</li>
+    <li><strong>A Deep Q-Network</strong> that maps state vectors to Q-values for each action.</li>
+    <li><strong>A reward function</strong> in Python that turns simulator transitions into learning signal.</li>
+    <li><strong>A training loop</strong> that runs many episodes, stores experience, and improves the network.</li>
+  </ol>
+
+  <div class="callout info">
+    <span class="label">Why this order</span>
+    <p>The world has to be <em>solvable and stable</em> before there's any point pointing a learner at it. A bad sim teaches a good algorithm garbage — and you'll spend weeks blaming the algorithm. So: physics first, then RL.</p>
+  </div>
+</section>
+
+<!-- ===================== 2. Simulator ===================== -->
+<section id="simulator">
+  <span class="section-num">02</span>
+  <h2>The Simulator</h2>
+  <p>The simulator advances the world in fixed-size time steps. Same <code>dt</code> every step, no matter the wall clock. This makes physics deterministic and reproducible — the same action sequence on the same track always produces the same trajectory.</p>
+
+  <pre><code class="language-typescript">// src/domain/simulation.ts
+export const DEFAULT_SIM_CONFIG: SimConfig = {
+  fixedDt: 1 / 60,   // 60 ticks per second
+  // ...
+};</code></pre>
+
+  <h3>Car state</h3>
+  <p>The car is a small struct. Position, heading, velocity (in world coordinates), and now also <strong>yaw rate</strong> — the angular velocity of the chassis. We'll need that the moment we move beyond a point-mass model.</p>
+
+  <pre><code class="language-typescript">interface CarState {
+  x: number;
+  y: number;
+  heading: number;   // radians, atan2 convention
+  vx: number;        // world-frame velocity
+  vy: number;
+  yawRate: number;   // angular velocity (rad/s)
+  // lap tracking, collisions, etc.
+}</code></pre>
+
+  <h3>Step function</h3>
+  <p>Every tick, <code>stepSimulation</code> takes the current state and an action and returns the next state. It's a pure function — no hidden globals, no time-of-day randomness. RL training depends on this purity.</p>
+
+  <pre><code class="language-typescript">function stepSimulation(
+  state: SimulationState,
+  action: AgentAction,         // throttle, brake, steer (all in [-1, 1] or [0, 1])
+  track: CompiledTrack,
+  dt: number
+): SimulationState;</code></pre>
+
+  <p class="code-pointer"><code>src/domain/simulation.ts</code></p>
+</section>
+
+<!-- ===================== 3. Bicycle Model ===================== -->
+<section id="bicycle">
+  <span class="section-num">03</span>
+  <h2>Bicycle-Model Physics</h2>
+  <p>Most arcade racers model the car as a single point: one position, one velocity, one heading. Steering instantly rotates the car; lateral friction instantly aligns velocity with heading. It's simple, but the car has no <em>character</em> — it can't slide, can't oversteer, can't lose grip. You can never "lose the back end."</p>
+
+  <p>The <strong>bicycle model</strong> upgrades this by giving the car two axles — one front (steers), one rear (drives) — connected by a chassis. Each axle has its own velocity, its own slip angle, its own lateral force. The car's heading is now driven by <em>moment</em> (a torque around the center of mass), not by the steering input directly.</p>
+
+  <svg viewBox="0 0 540 260" class="diagram" aria-label="Top-down diagram of the bicycle model">
+    <defs>
+      <marker id="arr-red" markerWidth="9" markerHeight="9" refX="8" refY="2.5" orient="auto">
+        <path d="M0,0 L0,5 L8,2.5 z" fill="#dc2626" />
+      </marker>
+      <marker id="arr-blue" markerWidth="9" markerHeight="9" refX="8" refY="2.5" orient="auto">
+        <path d="M0,0 L0,5 L8,2.5 z" fill="#2563eb" />
+      </marker>
+    </defs>
+
+    <g transform="translate(270, 130) rotate(-12)">
+      <!-- Chassis -->
+      <rect x="-110" y="-22" width="220" height="44" rx="8" fill="#fff" stroke="#1f2937" stroke-width="1.5" />
+
+      <!-- Rear axle -->
+      <line x1="-75" y1="-32" x2="-75" y2="32" stroke="#1f2937" stroke-width="3.5" stroke-linecap="round" />
+      <text x="-75" y="50" text-anchor="middle" font-size="11" fill="#374151">rear axle</text>
+
+      <!-- CoM -->
+      <circle cx="0" cy="0" r="5" fill="#dc2626" />
+      <text x="0" y="-12" text-anchor="middle" font-size="11" fill="#dc2626">CoM</text>
+
+      <!-- Front axle (rotated by steer angle δ) -->
+      <g transform="translate(75, 0) rotate(22)">
+        <line x1="0" y1="-32" x2="0" y2="32" stroke="#1f2937" stroke-width="3.5" stroke-linecap="round" />
+      </g>
+      <text x="75" y="50" text-anchor="middle" font-size="11" fill="#374151">front axle (δ)</text>
+
+      <!-- Heading arrow -->
+      <line x1="110" y1="0" x2="170" y2="0" stroke="#dc2626" stroke-width="2" marker-end="url(#arr-red)" />
+      <text x="180" y="4" font-size="11" fill="#dc2626">heading</text>
+
+      <!-- a, b labels -->
+      <line x1="-75" y1="32" x2="0" y2="32" stroke="#999" stroke-width="0.8" stroke-dasharray="3 3" />
+      <text x="-37" y="30" text-anchor="middle" font-size="10" fill="#666" font-style="italic">b</text>
+      <line x1="0" y1="32" x2="75" y2="32" stroke="#999" stroke-width="0.8" stroke-dasharray="3 3" />
+      <text x="37" y="30" text-anchor="middle" font-size="10" fill="#666" font-style="italic">a</text>
+    </g>
+
+    <!-- Velocity vector (from CoM, at angle β from heading) -->
+    <g transform="translate(270, 130) rotate(8)">
+      <line x1="0" y1="0" x2="120" y2="0" stroke="#2563eb" stroke-width="2" marker-end="url(#arr-blue)" />
+      <text x="128" y="4" font-size="11" fill="#2563eb">velocity</text>
+    </g>
+
+    <!-- Body slip arc β -->
+    <path d="M 320 130 A 50 50 0 0 0 318 110" stroke="#888" stroke-width="1" fill="none" />
+    <text x="335" y="115" font-size="11" fill="#666" font-style="italic">β</text>
+
+    <!-- caption -->
+    <text x="270" y="240" text-anchor="middle" font-size="11" fill="#666">δ = steering angle · β = body slip · a, b = CoM-to-axle distances</text>
+  </svg>
+
+  <h3>Slip angle: the heart of the model</h3>
+  <p>A tire's <strong>slip angle</strong> is the angle between the direction the tire is <em>pointing</em> and the direction it's actually <em>moving</em>. If they're aligned, no slip. If they differ, the tire deforms and pushes back — that's the lateral force that makes the car turn.</p>
+
+  <p>For the bicycle model, with body forward velocity <code>vbx</code>, body lateral velocity <code>vby</code>, yaw rate <code>r</code>, and front-wheel steering angle <code>δ</code>:</p>
+
+  <pre><code class="language-typescript">slipFront = δ - (vby + a · r) / vbx
+slipRear  =   - (vby - b · r) / vbx</code></pre>
+
+  <p>Read those: the front-axle slip is <em>where you pointed it minus where it's actually heading</em>. The rear has no steering input, so its slip is purely "the rear is rotating off the velocity vector."</p>
+
+  <h3>Yaw rate as state</h3>
+  <p>In a point-mass sim, yaw rate doesn't exist — heading is just whatever the steering input says. In a bicycle model, yaw rate has its own dynamics: it changes when the front and rear lateral forces produce different moments around the CoM. This is what "the car has inertia" actually means.</p>
+
+  <pre><code class="language-typescript">// Moment around CoM (positive = counter-clockwise yaw acceleration)
+moment = a · F_front_lateral - b · F_rear_lateral
+
+// Newton's second law for rotation
+yawRate += (moment / yawInertia) · dt
+heading += yawRate · dt</code></pre>
+
+  <p>If front grip exceeds rear grip during a corner, the rear rotates out — <em>oversteer</em>. If rear grip exceeds front grip, the car plows wide — <em>understeer</em>. Both fall out of the equations naturally; you don't have to script either.</p>
+
+  <p class="code-pointer"><code>src/domain/simulation.ts</code> — <code>stepSimulation</code></p>
+</section>
+
+<!-- ===================== 4. Tires ===================== -->
+<section id="tires">
+  <span class="section-num">04</span>
+  <h2>Tire Forces &amp; RWD</h2>
+  <p>Once you have a slip angle, you need to turn it into a force. Real tires are nonlinear: at small slip the force grows almost linearly with slip; past a certain point the rubber starts sliding and the force <em>caps</em>. That cap is the tire's <strong>peak grip</strong>.</p>
+
+  <svg viewBox="0 0 460 220" class="diagram" aria-label="Tire force vs slip curve, soft saturation">
+    <line x1="40" y1="110" x2="430" y2="110" stroke="#888" stroke-width="1.2" />
+    <line x1="235" y1="20" x2="235" y2="200" stroke="#888" stroke-width="1.2" />
+
+    <line x1="40" y1="40" x2="430" y2="40" stroke="#dc2626" stroke-width="1" stroke-dasharray="4 4" opacity="0.5" />
+    <line x1="40" y1="180" x2="430" y2="180" stroke="#dc2626" stroke-width="1" stroke-dasharray="4 4" opacity="0.5" />
+
+    <path d="M 40 178 Q 150 178 220 130 Q 232 115 248 92 Q 320 42 430 42" stroke="#dc2626" stroke-width="2.5" fill="none" />
+
+    <text x="225" y="35" text-anchor="end" font-size="11" fill="#666">+ peak grip</text>
+    <text x="225" y="195" text-anchor="end" font-size="11" fill="#666">− peak grip</text>
+    <text x="425" y="125" text-anchor="end" font-size="11" fill="#666">slip →</text>
+
+    <text x="245" y="20" font-size="12" fill="#dc2626" font-weight="600">F = peak · tanh(stiffness · slip / peak)</text>
+    <text x="245" y="55" font-size="10" fill="#666">soft saturation, smooth gradients</text>
+  </svg>
+
+  <p>We use a <code>tanh</code>-shaped curve, not a hard clamp. Two reasons:</p>
+  <ul>
+    <li><strong>Smooth gradients.</strong> Neural-network value approximators (DQN, PPO, etc.) hate sharp cliffs. <code>tanh</code> is differentiable everywhere; a clamp has a corner at the saturation point that the network has to spend capacity learning to fit.</li>
+    <li><strong>It matches reality.</strong> Real tires soften their grip near the limit too — they don't go from full grip to zero grip in one slip-angle increment.</li>
+  </ul>
+
+  <pre><code class="language-typescript">// Linear-region stiffness, saturating to peak grip
+const fyFront = tireGripFront *
+  Math.tanh((stiffnessFront * slipFront) / tireGripFront) *
+  speedFactor;</code></pre>
+
+  <p><code>speedFactor = tanh(|v| / 30)</code> kills the slip-derived forces at low speed, where the slip-angle math becomes ill-defined (you can't have a slip angle on a stationary tire).</p>
+
+  <h3>RWD via the friction circle</h3>
+  <p>A real tire has a single friction budget shared between longitudinal force (driving / braking) and lateral force (cornering). Push it hard one direction and there's less left for the other. This is the <strong>friction circle</strong>:</p>
+
+  <p><code>F_long² + F_lat² ≤ peak²</code></p>
+
+  <p>For a rear-wheel-drive car, the engine puts longitudinal force at the rear axle. So when you stomp the throttle, the rear tire's available lateral grip drops. Combine that with any cornering — and the rear breaks loose. <strong>That's power oversteer.</strong></p>
+
+  <pre><code class="language-typescript">// Rear axle eats engine force out of its grip budget (RWD)
+const rearLongUsed = Math.min(Math.abs(engineLong), tireGripRear);
+const rearLatBudget = Math.sqrt(
+  Math.max(0, tireGripRear ** 2 - rearLongUsed ** 2)
+);
+// Lateral tire force is now capped by what's LEFT after longitudinal demand
+const fyRear = rearLatBudget * Math.tanh(...);</code></pre>
+
+  <div class="callout">
+    <span class="label">Watch out</span>
+    <p>Sign conventions are the most common bug source in vehicle physics. Tire force should always <strong>oppose</strong> slip — if a positive slip produces a positive force in the same direction, you've created a positive feedback loop and your car will spin uncontrollably the moment any disturbance enters the system.</p>
+  </div>
+
+  <p class="code-pointer"><code>src/domain/simulation.ts</code> — tire force computation</p>
+</section>
+
+<!-- ===================== 5. Track ===================== -->
+<section id="track">
+  <span class="section-num">05</span>
+  <h2>Track, Checkpoints, Rays</h2>
+  <p>The track is a closed centerline (a list of 2D points) with a width per segment. Internally it gets compiled into segments with cumulative arc lengths so we can ask "how far around the lap am I?" cheaply.</p>
+
+  <h3>Checkpoints</h3>
+  <p>Lap detection has to handle a car that <em>partially</em> goes around — you don't want progress that suddenly jumps backwards because the car cut a corner. Checkpoints are progress markers placed around the track. The car has to cross them in order, and only after crossing them all does a lap count.</p>
+
+  <h3>Rays — vision via raycasting</h3>
+  <p>The car doesn't see the world as pixels. Instead, it casts rays outward from itself and measures the distance to the nearest off-track point in each direction. This gives a low-dimensional, view-rotation-invariant snapshot of the local geometry — perfect for a small neural network.</p>
+
+  <svg viewBox="0 0 480 240" class="diagram" aria-label="Top-down view of a car on track with rays">
+    <!-- Track (curved corridor) -->
+    <path d="M 30 180 C 100 180, 180 200, 240 160 S 380 90, 450 60"
+          stroke="#9ca3af" stroke-width="80" fill="none" stroke-linecap="round" opacity="0.35" />
+    <path d="M 30 180 C 100 180, 180 200, 240 160 S 380 90, 450 60"
+          stroke="#fff" stroke-width="76" fill="none" stroke-linecap="round" />
+    <path d="M 30 180 C 100 180, 180 200, 240 160 S 380 90, 450 60"
+          stroke="#1f2937" stroke-width="1" fill="none" stroke-dasharray="6 8" />
+
+    <!-- Car body -->
+    <g transform="translate(240, 165) rotate(-22)">
+      <rect x="-14" y="-7" width="28" height="14" rx="3" fill="#dc2626" />
+      <!-- Rays -->
+      <g stroke="#dc2626" stroke-width="1.2" opacity="0.6" stroke-dasharray="2 2">
+        <line x1="14" y1="0" x2="80" y2="0" />
+        <line x1="13" y1="-3" x2="76" y2="-22" />
+        <line x1="11" y1="-6" x2="60" y2="-40" />
+        <line x1="6" y1="-7" x2="20" y2="-50" />
+        <line x1="13" y1="3" x2="78" y2="22" />
+        <line x1="11" y1="6" x2="62" y2="42" />
+        <line x1="6" y1="7" x2="22" y2="52" />
+      </g>
+    </g>
+    <text x="240" y="222" text-anchor="middle" font-size="11" fill="#666">9 rays at fixed angles, distance clipped to <tspan font-family="JetBrains Mono">rayMaxDistance</tspan></text>
+  </svg>
+
+  <p>The ray angles are configurable but default to fanning across roughly ±90° from the car's nose. Each ray returns a single number: distance to the nearest track edge along that direction, or the max-distance value if it never hits one. With nine rays plus a few scalar fields, the agent can navigate without ever knowing where it is on a global map.</p>
+
+  <p class="code-pointer"><code>src/domain/track.ts</code> · <code>src/domain/simulation.ts</code> — <code>castRay</code></p>
+</section>
+
+<!-- ===================== 6. Observation ===================== -->
+<section id="observation">
+  <span class="section-num">06</span>
+  <h2>Observation &amp; State Vector</h2>
+  <p>An <code>AgentObservation</code> is everything the agent could possibly want to know about the world this frame, in a structured shape. It then gets <em>encoded</em> into a flat normalized array — the <strong>state vector</strong> — which is what actually feeds the neural network.</p>
+
+  <pre><code class="language-typescript">interface AgentObservation {
+  rays: number[];           // 9 raw ray distances
+  speed: number;            // |v|
+  yawRate: number;          // chassis angular velocity
+  bodySlipAngle: number;    // atan2(vby, vbx) — "how sideways am I?"
+  headingError: number;     // angle between heading and track tangent
+  lateralOffset: number;    // signed distance from track centerline
+  lapProgress: number;      // 0..1, normalized arc-length around the lap
+  offTrack: boolean;
+  collision: boolean;
+  // ...
+}</code></pre>
+
+  <h3>Why each field exists</h3>
+  <ul>
+    <li><strong>rays</strong> — local geometry. Without these the agent can't see walls coming.</li>
+    <li><strong>speed</strong> — pretty obvious; affects how fast everything else is changing.</li>
+    <li><strong>yawRate</strong> — required by the bicycle model. Without it, "going straight at 200" and "spinning at 200" are the same observation. DQN sees one frame at a time and would never recover from a spin.</li>
+    <li><strong>bodySlipAngle</strong> — distinguishes "going forward" from "sliding sideways." Critical for an oversteer-prone car.</li>
+    <li><strong>headingError</strong> — points the agent toward the right racing direction.</li>
+    <li><strong>lateralOffset</strong> — keeps it honest about staying near the racing line.</li>
+    <li><strong>lapProgress</strong> — encoded as <code>sin(2π · lapProgress)</code>, <code>cos(2π · lapProgress)</code> so it wraps continuously around 1.0 → 0.0 with no discontinuity.</li>
+  </ul>
+
+  <h3>The state vector — a fixed contract</h3>
+  <p>The neural network needs a fixed-size array of normalized floats, every frame, forever. Once you commit to a layout, you commit to it — old trained models depend on the exact ordering and scaling. So we version it.</p>
+
+  <div class="state-vector">
+    <div class="cell ray">ray 0</div><div class="cell ray">ray 1</div><div class="cell ray">ray 2</div>
+    <div class="cell ray">ray 3</div><div class="cell ray">ray 4</div><div class="cell ray">ray 5</div>
+    <div class="cell ray">ray 6</div><div class="cell ray">ray 7</div><div class="cell ray">ray 8</div>
+    <div class="cell kine">speed</div><div class="cell pose">heading err</div><div class="cell pose">lat. offset</div>
+    <div class="cell pose">sin(lap)</div><div class="cell pose">cos(lap)</div><div class="cell flag">off-track</div>
+    <div class="cell flag">collision</div><div class="cell slip">yaw rate</div><div class="cell slip">body slip</div>
+  </div>
+
+  <div class="legend">
+    <span><span class="swatch" style="background:#fef2f2;border-color:#fecaca"></span> rays (9)</span>
+    <span><span class="swatch" style="background:#eff6ff;border-color:#bfdbfe"></span> kinematics (1)</span>
+    <span><span class="swatch" style="background:#f0fdf4;border-color:#bbf7d0"></span> pose (4)</span>
+    <span><span class="swatch" style="background:#fffbeb;border-color:#fde68a"></span> flags (2)</span>
+    <span><span class="swatch" style="background:#f5f3ff;border-color:#ddd6fe"></span> slip (2)</span>
+  </div>
+
+  <pre><code class="language-typescript">// src/domain/ai/encodeObservation.ts
+export const STATE_VECTOR_VERSION = 2;
+export const STATE_VECTOR_SIZE = 18;
+export const MAX_YAW_RATE = 6;
+
+export function encodeObservation(obs: AgentObservation, config = DEFAULT_SIM_CONFIG): number[] {
+  const lapAngle = obs.lapProgress * Math.PI * 2;
+  return [
+    ...obs.rays.map((r) => clamp(r / config.rayMaxDistance, 0, 1)),
+    clamp(obs.speed / config.maxSpeed, 0, 1),
+    clamp(obs.headingError / Math.PI, -1, 1),
+    clamp(obs.lateralOffset / 2, -1, 1),
+    Math.sin(lapAngle),
+    Math.cos(lapAngle),
+    obs.offTrack ? 1 : 0,
+    obs.collision ? 1 : 0,
+    clamp(obs.yawRate / MAX_YAW_RATE, -1, 1),
+    clamp(obs.bodySlipAngle / (Math.PI / 2), -1, 1),
+  ];
+}</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Versioning matters</span>
+    <p>If you ever change the state vector — adding a field, reordering, changing a normalization constant — bump <code>STATE_VECTOR_VERSION</code>. Old saved models trained against the old layout will be silently wrong otherwise. The Python side should refuse a session whose version doesn't match what the model expects.</p>
+  </div>
+</section>
+
+<!-- ===================== 7. Actions ===================== -->
+<section id="actions">
+  <span class="section-num">07</span>
+  <h2>Discrete Action Space</h2>
+  <p>DQN learns a Q-value <em>for every (state, action) pair</em>. With continuous actions (any throttle from 0 to 1, any steer from −1 to 1) the action space is infinite — you can't argmax over infinity. So we discretize: a small fixed table of (throttle, brake, steer) triples, indexed 0…N.</p>
+
+  <pre><code class="language-typescript">export const AI_ACTIONS: AgentAction[] = [
+  { throttle: 0.85, brake: 0,    steer:  0     },  // 0: full ahead
+  { throttle: 0.75, brake: 0,    steer: -0.45  },  // 1: gentle left
+  { throttle: 0.75, brake: 0,    steer:  0.45  },  // 2: gentle right
+  { throttle: 0.35, brake: 0,    steer: -0.8   },  // 3: tight left
+  { throttle: 0.35, brake: 0,    steer:  0.8   },  // 4: tight right
+  { throttle: 0,    brake: 0.65, steer:  0     },  // 5: brake
+  { throttle: 0.12, brake: 0.25, steer:  0     },  // 6: trail-brake / settle
+];</code></pre>
+
+  <h3>Why these seven?</h3>
+  <p>It's a sweet spot. Each action expresses a different <em>intent</em>: cruise, ease into a corner, commit to a tight corner, slow down, recover from instability. With three steering levels per throttle setting and a brake row, the agent can race a clean lap with this minimal table.</p>
+
+  <p>Could you use 30 actions? Sure — and the Q-network gets a wider output layer. But more actions also means more entries the network has to learn correct relative values for, which slows learning. Start with 7. Expand only if you observe the agent visibly struggling for nuance the table can't express (e.g. cornering on the limit).</p>
+
+  <h3>The contract</h3>
+  <p>Python returns <em>action indices</em>, never raw throttle / brake / steer. The simulator owns the lookup. This keeps the protocol tiny, lets multiple algorithms share the same action space, and means the action table version is the only thing you have to negotiate.</p>
+
+  <div class="callout info">
+    <span class="label">Looking ahead</span>
+    <p>If you later move to PPO or SAC (continuous-action algorithms), the protocol can keep the action-index path for DQN and add a parallel raw-action path. Don't refactor pre-emptively — wait until you actually need it.</p>
+  </div>
+</section>
+
+<!-- ===================== 8. Protocol ===================== -->
+<section id="protocol">
+  <span class="section-num">08</span>
+  <h2>TS &harr; Python Protocol</h2>
+  <p>The simulator and the brain talk over WebSocket. WebSocket is a good fit because we send dozens of small messages per second per simulator instance — HTTP overhead would dominate.</p>
+
+  <h3>Three message types</h3>
+
+  <h4 style="margin-top:24px;font-size:15px;">1. Session start</h4>
+  <p>The first thing TS sends. It tells Python <em>what kind of world</em> this is — protocol versions, vector size, time step, action count. Python compares these to what its model expects and either accepts or rejects.</p>
+
+  <pre><code class="language-json">{
+  "type": "session_start",
+  "sessionId": "run-001",
+  "trackHash": "abc12345",
+  "stateVectorVersion": 2,
+  "actionSpaceVersion": 1,
+  "fixedDt": 0.0166666667,
+  "stateSize": 18,
+  "actionCount": 7
+}</code></pre>
+
+  <h4 style="margin-top:24px;font-size:15px;">2. Action request</h4>
+  <p>Every simulator step (or every Nth step), TS sends the current state and Python returns the index of the action to execute.</p>
+
+  <pre><code class="language-json">// TS → Python
+{ "type": "action_request", "step": 128, "state": [0.81, 0.74, ...] }
+
+// Python → TS
+{ "type": "action_response", "step": 128, "actionIndex": 2 }</code></pre>
+
+  <h4 style="margin-top:24px;font-size:15px;">3. Transition</h4>
+  <p>After TS applies the action and steps physics, it sends the resulting transition. Python computes reward from this and stores the transition in its replay buffer.</p>
+
+  <pre><code class="language-json">{
+  "type": "transition",
+  "step": 128,
+  "state": [...],
+  "actionIndex": 2,
+  "nextState": [...],
+  "done": false,
+  "env": {
+    "previousProgressDistance": 312.4,
+    "nextProgressDistance": 319.8,
+    "totalLength": 1840.2,
+    "speed": 196.6,
+    "collision": false,
+    "offTrack": false,
+    "lapCompleted": false,
+    "elapsed": 2.15
+  }
+}</code></pre>
+
+  <p>The <code>env</code> sub-object is the <em>raw simulator data</em> Python needs to compute reward — not the normalized state vector, since reward is most cleanly defined in real units (px/s, px of progress, etc.).</p>
+
+  <div class="callout success">
+    <span class="label">Why this design</span>
+    <p>State, action, reward, next state — that's literally a transition in the RL sense. The protocol is shaped to give Python <em>exactly</em> what it needs to add a row to its replay buffer. Nothing more, nothing less.</p>
+  </div>
+</section>
+
+<!-- ===================== 9. DQN ===================== -->
+<section id="dqn">
+  <span class="section-num">09</span>
+  <h2>DQN: How It Learns</h2>
+  <p>DQN — Deep Q-Network — learns a function <code>Q(s, a)</code>: "if I'm in state <em>s</em> and take action <em>a</em>, what total future reward should I expect?" Once you can estimate that, picking the best action is just <code>argmax_a Q(s, a)</code>.</p>
+
+  <h3>The Bellman equation</h3>
+  <p>The whole framework rests on one recursive identity: the value of a state-action pair equals the immediate reward plus the discounted value of <em>where you'll end up next</em>.</p>
+
+  <pre><code class="language-text">Q(s, a) = r + γ · max_a' Q(s', a')</code></pre>
+
+  <p><code>γ ∈ [0, 1)</code> is the discount factor — how much we care about future reward vs. immediate. <code>γ = 0.99</code> is a typical choice; it means the reward 100 steps from now is worth about 37% as much as reward right now.</p>
+
+  <h3>From equation to network</h3>
+  <p>For a tiny problem (gridworld), Q is just a table indexed by (state, action). For our problem the state space is continuous and 18-dimensional — way too big for a table. So we approximate Q with a neural network: input = state vector (18), output = one Q-value per action (7).</p>
+
+  <pre><code class="language-text">input:  18  (state vector)
+dense:  64, ReLU
+dense:  64, ReLU
+output:  7  (one Q-value per action)</code></pre>
+
+  <h3>Three tricks that make DQN actually work</h3>
+  <p>If you naively train a Q-network on every transition as it arrives, learning is unstable: consecutive transitions are highly correlated, the targets you're regressing toward shift while you're regressing, and rare events get drowned out. DQN solves this with three additions:</p>
+
+  <h4 style="margin-top:24px;font-size:15px;">1. Replay buffer</h4>
+  <p>Store the last N transitions in a big circular buffer. Train on <em>random minibatches</em> sampled from it. This breaks the correlation between consecutive frames and lets the network revisit rare events many times.</p>
+
+  <pre><code class="language-python">replay_buffer.push(state, action_index, reward, next_state, done)
+batch = replay_buffer.sample(batch_size=64)</code></pre>
+
+  <h4 style="margin-top:24px;font-size:15px;">2. Target network</h4>
+  <p>The Bellman equation has Q on both sides. If you use the same network on both — predicting <em>and</em> setting the target — you're chasing a moving target, which is unstable. So you keep two copies: an <strong>online</strong> network you train every step, and a <strong>target</strong> network whose weights you hard-copy from online every K steps. The target network sets the right-hand-side of Bellman:</p>
+
+  <pre><code class="language-python">td_target = reward + (0 if done else gamma * target_net(next_state).max())
+loss = (online_net(state)[action_index] - td_target) ** 2</code></pre>
+
+  <h4 style="margin-top:24px;font-size:15px;">3. ε-greedy exploration</h4>
+  <p>Early in training, the Q-values are random — the argmax is meaningless. You need to explore. With probability ε, take a random action; otherwise take the argmax. ε starts near 1.0 and decays toward something like 0.05 over the course of training.</p>
+
+  <pre><code class="language-python">if random.random() &lt; epsilon:
+    action_index = random.randrange(action_count)
+else:
+    action_index = q_network(state).argmax()</code></pre>
+
+  <div class="callout">
+    <span class="label">Three knobs to keep an eye on</span>
+    <p><strong>γ</strong> too low → agent is short-sighted, refuses to brake before corners. <strong>ε decay</strong> too fast → agent commits to a bad early policy. <strong>Target update period</strong> too short → instability; too long → slow learning.</p>
+  </div>
+</section>
+
+<!-- ===================== 10. Reward ===================== -->
+<section id="reward">
+  <span class="section-num">10</span>
+  <h2>Reward Design</h2>
+  <p>Reward is the <em>only</em> signal the agent has about what you actually want. If your reward function is wrong, the agent will learn to maximize the wrong thing — and it'll do it very effectively. This is the most-edited file in any RL project, by a wide margin.</p>
+
+  <h3>A reasonable starting reward</h3>
+  <pre><code class="language-python">progress_reward    =  progress_delta_px * 0.02
+speed_reward       =  speed              * 0.0008
+steering_penalty   =  abs(action.steer)  * 0.01
+collision_penalty  =  2.0  if collision     else 0.0
+off_track_penalty  =  0.12 if off_track     else 0.0
+stuck_penalty      =  0.02 if speed &lt; 12   else 0.0
+lap_bonus          =  8.0  if lap_completed else 0.0
+
+reward = (
+    progress_reward + speed_reward + lap_bonus
+    - steering_penalty - collision_penalty - off_track_penalty - stuck_penalty
+)</code></pre>
+
+  <h3>Why each term</h3>
+  <table class="compact">
+    <thead><tr><th>Term</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>progress</strong></td>
+        <td>The headline goal. Agent gets paid by the meter for moving <em>forward around the track</em>. Computed from <code>nextProgressDistance − previousProgressDistance</code>, with wrap-around handling at the start line.</td>
+      </tr>
+      <tr>
+        <td><strong>speed</strong></td>
+        <td>Small constant nudge to keep moving. Without this, the agent learns that creeping carefully forward earns the same per-step progress reward as charging — but with less risk of crashing. Speed reward breaks that tie.</td>
+      </tr>
+      <tr>
+        <td><strong>steering penalty</strong></td>
+        <td>Discourages flailing. Without it, agents often learn jittery zigzag policies that maximize average progress but look terrible.</td>
+      </tr>
+      <tr>
+        <td><strong>collision</strong> / <strong>off-track</strong></td>
+        <td>The fence. Without these the optimal policy involves bouncing off walls.</td>
+      </tr>
+      <tr>
+        <td><strong>stuck penalty</strong></td>
+        <td>Rescues episodes where the agent has spun out and is sitting still. Forces it to do <em>something</em>.</td>
+      </tr>
+      <tr>
+        <td><strong>lap bonus</strong></td>
+        <td>A big sparse reward when the agent actually completes the goal. Often the difference between "agent corners well" and "agent races."</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Common reward bugs</h3>
+  <ul>
+    <li><strong>Reward sign wrong on progress wrap-around.</strong> When the car crosses the start line, raw <code>progressDistance</code> jumps from <code>totalLength</code> to <code>0</code>, which looks like a giant negative delta. Always clamp progress delta to a reasonable forward range, and award the lap bonus separately.</li>
+    <li><strong>Reward magnitudes too uneven.</strong> If <code>collision_penalty</code> is huge compared to per-step progress reward, the agent will learn extreme avoidance — even if that means refusing to drive.</li>
+    <li><strong>Rewarding what's easy to measure instead of what you want.</strong> "Stay near centerline" sounds reasonable until your agent learns to drive painfully slowly along the centerline forever. Always ask: <em>does the optimal cheating policy achieve my real goal?</em></li>
+  </ul>
+
+  <div class="callout warn">
+    <span class="label">Specification gaming is real</span>
+    <p>If there's a way to maximize your reward without doing what you intended, the agent <em>will</em> find it. Reward design is half engineering, half adversarial — assume your function will be exploited and ask how.</p>
+  </div>
+</section>
+
+<!-- ===================== 11. Training Loop ===================== -->
+<section id="training">
+  <span class="section-num">11</span>
+  <h2>Training Loop</h2>
+  <p>Now we put everything together. There's a per-step loop and an outer episode loop.</p>
+
+  <svg viewBox="0 0 540 280" class="diagram" aria-label="Cyclic training loop diagram">
+    <defs>
+      <marker id="arr-cycle" markerWidth="9" markerHeight="9" refX="8" refY="2.5" orient="auto">
+        <path d="M0,0 L0,5 L8,2.5 z" fill="#dc2626" />
+      </marker>
+    </defs>
+    <g font-size="13" text-anchor="middle">
+      <g transform="translate(270, 50)">
+        <rect x="-70" y="-22" width="140" height="44" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5" />
+        <text y="5">observe + encode</text>
+      </g>
+      <g transform="translate(450, 140)">
+        <rect x="-70" y="-22" width="140" height="44" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5" />
+        <text y="5">ε-greedy action</text>
+      </g>
+      <g transform="translate(380, 240)">
+        <rect x="-70" y="-22" width="140" height="44" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5" />
+        <text y="5">step physics</text>
+      </g>
+      <g transform="translate(160, 240)">
+        <rect x="-70" y="-22" width="140" height="44" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5" />
+        <text y="5">compute reward</text>
+      </g>
+      <g transform="translate(90, 140)">
+        <rect x="-70" y="-22" width="140" height="44" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5" />
+        <text y="5">store + train</text>
+      </g>
+    </g>
+
+    <g stroke="#dc2626" stroke-width="1.5" fill="none">
+      <path d="M 340 60 Q 410 75 430 120" marker-end="url(#arr-cycle)" />
+      <path d="M 460 165 Q 450 215 410 230" marker-end="url(#arr-cycle)" />
+      <path d="M 310 250 L 240 250" marker-end="url(#arr-cycle)" />
+      <path d="M 130 215 Q 95 200 90 165" marker-end="url(#arr-cycle)" />
+      <path d="M 110 120 Q 180 80 200 60" marker-end="url(#arr-cycle)" />
+    </g>
+  </svg>
+
+  <pre><code class="language-python"># Once per simulator step
+state = encode_observation(obs)
+action_index = epsilon_greedy(q_network, state, epsilon)
+send_action(action_index)
+
+transition = wait_for_transition()
+reward = compute_reward(transition)
+replay_buffer.push(state, action_index, reward,
+                   transition.next_state, transition.done)
+
+# Every K steps, after warmup
+if step &gt; warmup_steps and step % train_every == 0:
+    batch = replay_buffer.sample(batch_size)
+    train_step(online_net, target_net, batch, gamma, optimizer)
+
+if step % target_update_every == 0:
+    target_net.load_state_dict(online_net.state_dict())</code></pre>
+
+  <h3>Live mode vs. headless mode</h3>
+  <p>The same protocol supports two clients:</p>
+  <ul>
+    <li><strong>Live mode</strong> — the React app renders the game, the user can watch the agent drive. Useful for inspecting behavior. Limited to ~60 steps per second by the renderer.</li>
+    <li><strong>Headless mode</strong> — a pure-TS runner steps the simulator as fast as possible with no rendering. Used to actually generate the experience that DQN trains on. Often 10× to 100× faster than live mode.</li>
+  </ul>
+
+  <p>Don't try to train on live mode. Use it for debugging only. Real training runs need the throughput of headless.</p>
+
+  <h3>Starting hyperparameters</h3>
+  <pre><code class="language-python">gamma                    = 0.99
+learning_rate            = 0.00025
+batch_size               = 64
+replay_capacity          = 50_000
+warmup_steps             = 2_000   # fill the buffer before training
+train_every_steps        = 4
+target_update_every      = 1_000
+epsilon_start            = 1.0
+epsilon_end              = 0.05
+epsilon_decay_steps      = 40_000</code></pre>
+
+  <p>These aren't sacred. Tune them when something is clearly wrong (loss exploding → lower learning rate; agent stuck random → faster epsilon decay; etc.). Don't tune them <em>preemptively</em>.</p>
+</section>
+
+<!-- ===================== 12. Debug ===================== -->
+<section id="debug">
+  <span class="section-num">12</span>
+  <h2>Debugging &amp; Next Steps</h2>
+
+  <h3>If behavior looks wrong</h3>
+  <ul>
+    <li><strong>Verify TS and Python agree on <code>stateVectorVersion</code>.</strong> A version mismatch silently shifts every input feature.</li>
+    <li><strong>Verify <code>actionSpaceVersion</code>.</strong> Same problem on the action side: index 2 means different things.</li>
+    <li><strong>Log every action index and the decoded action.</strong> If "left" turns produce right-hand cornering, you have a sign or index mismatch.</li>
+    <li><strong>Check finite values.</strong> The bicycle model's slip-angle math has <code>vbx</code> in the denominator; very-low-speed states are the most common NaN source if anyone removes the low-speed force fade.</li>
+    <li><strong>Random policy first, always.</strong> Before plugging in DQN, run a uniform-random Python policy and confirm the car moves and produces transitions. If <em>that</em> doesn't work, the bug isn't in your learner.</li>
+    <li><strong>Compare live and headless transitions.</strong> They should be byte-identical given the same seed and action sequence.</li>
+    <li><strong>Watch the loss.</strong> Q-loss should drop steadily and then plateau. Exploding loss = lower learning rate or smaller gradient clipping. Flat-zero loss = your TD targets aren't moving (broken target network update? broken sampling?).</li>
+  </ul>
+
+  <h3>Sanity benchmarks</h3>
+  <ul>
+    <li>Random policy should achieve some non-zero average progress per episode (it'll occasionally face the right way and accelerate). If it doesn't, your physics or your reward is broken.</li>
+    <li>DQN after 100K steps should clearly beat random average progress. If it's the same, something's not learning.</li>
+    <li>DQN after 1M steps on a simple track should complete laps reliably. If it can't, you're either under-exploring or your reward shaping is fighting you.</li>
+  </ul>
+
+  <h3>Beyond DQN</h3>
+  <p>The protocol was designed so that the simulator doesn't know which algorithm is on the other end. That means once DQN works, you can swap in:</p>
+  <ul>
+    <li><strong>PPO</strong> (Proximal Policy Optimization) — continuous actions, better sample efficiency, more stable. The mainstream choice for continuous control as of the late 2020s.</li>
+    <li><strong>SAC</strong> (Soft Actor-Critic) — also continuous, off-policy. Often even more sample-efficient than PPO.</li>
+    <li><strong>Imitation learning</strong> — record human (or hand-crafted) drives, train the network to copy them. A great way to bootstrap: fine-tune with RL on top.</li>
+    <li><strong>Reference-clone agents</strong> — the rule-based <code>ReferenceLineAgent</code> in the codebase doesn't learn, but you can use its actions as expert demos for imitation pretraining.</li>
+  </ul>
+
+  <h3>What to build next, in order</h3>
+  <ol>
+    <li>Make sure the simulator produces stable, fast, deterministic transitions.</li>
+    <li>Build the protocol with a <em>random</em> Python policy. Verify round-tripping.</li>
+    <li>Move reward computation into Python; verify the numbers look reasonable.</li>
+    <li>Build the headless TS runner.</li>
+    <li>Implement DQN. Train on a simple oval first.</li>
+    <li>Iterate the reward function as the agent finds new ways to surprise you.</li>
+    <li>Add evaluation runs (greedy, no exploration) on a held-out track to detect overfitting.</li>
+  </ol>
+
+  <div class="callout success">
+    <span class="label">You're done when</span>
+    <p>The React app can drive from Python's actions. A random policy can run complete episodes through your protocol. The headless runner generates faster-than-real-time transitions. DQN training shows monotonically rising average progress over random. And the protocol is generic enough that adding a second algorithm doesn't require touching the simulator.</p>
+  </div>
+</section>
+
+</main>
+</div>
+
+<footer>
+  Companion guide for the racing-AI project. Source files referenced live in <code>src/domain/</code>.
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script src="script.js"></script>
+
+</body>
+</html>

@@ -19,6 +19,15 @@ Python AI runtime
 
 That lets you later swap DQN for PPO, SAC, imitation learning, a rule-based search policy, or a remote model without rewriting the simulator.
 
+## Physics Model
+
+The simulator runs a bicycle model: separate front and rear axles with their own slip angles, RWD with the engine longitudinal force coupled into a rear friction circle (so throttle reduces rear lateral grip), and soft tire saturation via `tanh`. This has direct consequences for the RL stack:
+
+- **The Markov state grew.** Position, heading, and speed are no longer enough. The car now carries `yawRate` and a non-trivial body slip angle (`atan2(vby, vbx)`), and DQN cannot tell from a single frame that it is spinning or sliding without them. The state vector must include both — see below.
+- **Random actions spin the car.** Early epsilon-greedy exploration will produce more spin-outs than the old point-mass model did, so wall-clock to first useful behavior is higher. Consider a slower epsilon decay or longer warmup than the defaults.
+- **Throttle level inside a corner is now meaningful.** Because the rear shares its grip budget between longitudinal and lateral, partial-throttle actions (and trail-braking) express real racing technique. The starter action table works, but expanding it later is one of the cheapest wins.
+- **No hard grip cliffs.** Tire forces use `tanh`, not a clamp, on purpose: smooth gradients are easier for value-function approximators to fit.
+
 ## Minimal TypeScript Responsibilities
 
 The TS side should do only the environment work that must stay coupled to the game:
@@ -84,7 +93,7 @@ Do not let Python return raw throttle/brake/steer for the first DQN. Returning a
 
 The state vector can stay TS-owned because it is derived directly from `AgentObservation`. Treat it as a versioned protocol artifact, not as DQN-specific code.
 
-The current default observation has 9 rays, so this first vector has 16 values:
+With the bicycle model, the agent needs `yawRate` and a body-frame velocity signal (or body slip angle) on top of the original fields, otherwise the same observation can correspond to "going straight at 200 px/s" and "spinning at 200 px/s" — DQN cannot tell them apart from one frame. The default observation has 9 rays, so the version-2 vector has 18 values:
 
 ```ts
 [
@@ -95,9 +104,13 @@ The current default observation has 9 rays, so this first vector has 16 values:
   Math.sin(lapProgressTau),
   Math.cos(lapProgressTau),
   offTrack ? 1 : 0,
-  collision ? 1 : 0
+  collision ? 1 : 0,
+  yawRateNormalized,          // yawRate / maxYawRate (~6 rad/s)
+  bodySlipNormalized          // atan2(vby, vbx) / (Math.PI / 2)
 ]
 ```
+
+This requires extending `AgentObservation` with `yawRate` and a body-slip signal (`bodySlipAngle`, or `vbx`/`vby` directly). The existing `speed` field is `|v|` and discards direction, which is fine for "how fast" but useless for "am I sideways."
 
 Implementation sketch:
 
@@ -105,6 +118,7 @@ Implementation sketch:
 function encodeObservation(observation: AgentObservation, config = DEFAULT_SIM_CONFIG): number[] {
   const tau = Math.PI * 2;
   const lapAngle = observation.lapProgress * tau;
+  const maxYawRate = 6;
 
   return [
     ...observation.rays.map((ray) => clamp(ray / config.rayMaxDistance, 0, 1)),
@@ -114,12 +128,14 @@ function encodeObservation(observation: AgentObservation, config = DEFAULT_SIM_C
     Math.sin(lapAngle),
     Math.cos(lapAngle),
     observation.offTrack ? 1 : 0,
-    observation.collision ? 1 : 0
+    observation.collision ? 1 : 0,
+    clamp(observation.yawRate / maxYawRate, -1, 1),
+    clamp(observation.bodySlipAngle / (Math.PI / 2), -1, 1)
   ];
 }
 ```
 
-Include `stateVectorVersion` in every session handshake. If this encoding changes, old models should be rejected or explicitly migrated.
+Include `stateVectorVersion` in every session handshake. If this encoding changes, old models should be rejected or explicitly migrated. Bumping the encoding from version 1 (point-mass) to version 2 (bicycle) is one such break.
 
 ## Protocol Shape
 
@@ -134,10 +150,10 @@ TS sends:
   "type": "session_start",
   "sessionId": "run-001",
   "trackHash": "abc12345",
-  "stateVectorVersion": 1,
+  "stateVectorVersion": 2,
   "actionSpaceVersion": 1,
   "fixedDt": 0.0166666667,
-  "stateSize": 16,
+  "stateSize": 18,
   "actionCount": 7
 }
 ```
@@ -320,7 +336,7 @@ epsilon_decay_steps = 40_000
 First DQN network:
 
 ```text
-input: 16
+input: 18
 dense: 64, relu
 dense: 64, relu
 output: actionCount
@@ -381,7 +397,7 @@ Do not rely on the visible React loop for serious training. It is useful for ins
 ## Milestone Plan
 
 1. Define `AI_ACTIONS`, `stateVectorVersion`, and protocol message types.
-2. Add `encodeObservation` and tests for shape, ranges, and finite values.
+2. Extend `AgentObservation` with `yawRate` and `bodySlipAngle`, then add `encodeObservation` and tests for shape, ranges, and finite values.
 3. Add a tiny Python WebSocket service with a random policy.
 4. Connect the React drive loop to the Python random policy.
 5. Add transition messages with progress, collision, off-track, lap, and elapsed metadata.
@@ -395,13 +411,14 @@ Do not rely on the visible React loop for serious training. It is useful for ins
 
 If behavior looks wrong:
 
-- Verify TS and Python agree on `stateVectorVersion`.
+- Verify TS and Python agree on `stateVectorVersion` (now 2 for the bicycle model).
 - Verify TS and Python agree on `actionSpaceVersion`.
 - Log every `actionIndex` and decoded `AgentAction`.
-- Check that all state values are finite.
+- Check that all state values are finite — the slip-angle math uses `vbx` in the denominator, so very low forward speeds are the most likely source of NaN/Inf if the low-speed force fade is ever removed.
 - Check that `fixedDt` is constant.
 - Confirm Python reward uses wrapped progress distance correctly.
-- Run a random Python policy first; it should move the car and produce transitions.
+- Run a random Python policy first; it should move the car and produce transitions. Expect more spin-outs than the old physics produced — that's the bicycle model, not a bug.
+- If the agent never recovers from a spin during training, confirm the state vector actually carries `yawRate` (otherwise the agent is partially observed and DQN can't learn the recovery policy).
 - Compare live-mode transitions with headless-runner transitions.
 
 ## Recommended First Definition Of Done

@@ -86,6 +86,8 @@ export interface AgentObservation {
   rays: number[];
   rayAngles: number[];
   speed: number;
+  yawRate: number;
+  bodySlipAngle: number;
   headingError: number;
   lateralOffset: number;
   checkpointProgress: number;
@@ -117,11 +119,17 @@ export interface SimConfig {
   brakeForce: number;
   reverseBrakeForce: number;
   forwardDrag: number;
-  lateralFriction: number;
   offTrackDrag: number;
   maxSpeed: number;
   maxReverseSpeed: number;
-  turnRate: number;
+  cgToFront: number;
+  cgToRear: number;
+  maxSteerAngle: number;
+  corneringStiffnessFront: number;
+  corneringStiffnessRear: number;
+  tireGripFront: number;
+  tireGripRear: number;
+  yawInertia: number;
   rayAngles: number[];
   rayMaxDistance: number;
   rayStep: number;
@@ -133,6 +141,7 @@ export interface CarState {
   heading: number;
   vx: number;
   vy: number;
+  yawRate: number;
   lap: number;
   lapTime: number;
   lastLapTime?: number;

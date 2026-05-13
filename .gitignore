@@ -94,3 +94,7 @@ temp/
 *.bak
 *.swp
 Completly Unrelated Folder/
+
+Claude.md
+
+.claude/

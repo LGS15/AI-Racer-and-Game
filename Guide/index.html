@@ -36,6 +36,10 @@
       <li><a href="#reward">Reward Design</a></li>
       <li><a href="#training">Training Loop</a></li>
       <li><a href="#debug">Debugging &amp; Next Steps</a></li>
+      <li class="toc-part" style="counter-increment: none; list-style: none; margin: 18px 0 2px; padding-left: 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600;">Build It — Walkthrough</li>
+      <li><a href="#build-overview">Roadmap &amp; Setup</a></li>
+      <li><a href="#build-brain">Building the Brain</a></li>
+      <li><a href="#build-wire">Wiring Up &amp; Training</a></li>
     </ol>
   </nav>
 </aside>
@@ -670,7 +674,7 @@ if step % target_update_every == 0:
   <p>The same protocol supports two clients:</p>
   <ul>
     <li><strong>Live mode</strong> — the React app renders the game, the user can watch the agent drive. Useful for inspecting behavior. Limited to ~60 steps per second by the renderer.</li>
-    <li><strong>Headless mode</strong> — a pure-TS runner steps the simulator as fast as possible with no rendering. Used to actually generate the experience that DQN trains on. Often 10× to 100× faster than live mode.</li>
+    <li><strong>Headless mode</strong> — a pure-TS runner steps the simulator with no rendering. Used to generate the experience that DQN trains on. Faster than live <em>only</em> once you stop blocking on a per-step socket round-trip — a single environment is latency-bound (see §15). Real throughput comes from running many environments concurrently against one policy.</li>
   </ul>
 
   <p>Don't try to train on live mode. Use it for debugging only. Real training runs need the throughput of headless.</p>
@@ -737,6 +741,444 @@ epsilon_decay_steps      = 40_000</code></pre>
     <span class="label">You're done when</span>
     <p>The React app can drive from Python's actions. A random policy can run complete episodes through your protocol. The headless runner generates faster-than-real-time transitions. DQN training shows monotonically rising average progress over random. And the protocol is generic enough that adding a second algorithm doesn't require touching the simulator.</p>
   </div>
+</section>
+
+<!-- ============================================================= -->
+<!-- =================  PART II — BUILD IT  ======================= -->
+<!-- ============================================================= -->
+
+<!-- ===================== 13. Build Overview ===================== -->
+<section id="build-overview">
+  <span class="section-num">Part II · 13</span>
+  <h2>Build It: Roadmap &amp; Setup</h2>
+  <p>Everything above this line was the <em>why</em>. Sections 01–12 are the lecture: how the physics works, what the state vector carries, what DQN is doing under the hood. This part is the <strong>lab</strong> — a step-by-step build where you write the code, file by file, and end with a Q-network that actually learns to drive the simulator in this repo.</p>
+
+  <p>I'll keep the theory beside each step, but compressed: when something needs a full explanation, I'll point you back to the section that gives it. The goal here is that you can sit down, type along, and have a working learner — not re-derive the Bellman equation a second time.</p>
+
+  <h3>What already exists (don't rebuild this)</h3>
+  <p>The TypeScript half of the system is already done and wired into the game. Before writing anything, understand that these files are <em>finished</em>:</p>
+  <table class="compact">
+    <thead><tr><th>File</th><th>What it already gives you</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/domain/ai/actions.ts</code></td><td>The 7-entry <code>AI_ACTIONS</code> table and <code>indexToAction()</code>. The action contract (§07).</td></tr>
+      <tr><td><code>src/domain/ai/encodeObservation.ts</code></td><td><code>encodeObservation()</code> → the 18-float state vector, version 2 (§06).</td></tr>
+      <tr><td><code>src/domain/ai/protocol.ts</code></td><td>The exact message shapes for <code>session_start</code>, <code>action_request</code>, <code>transition</code>, etc. (§08).</td></tr>
+      <tr><td><code>src/domain/ai/environmentBridge.ts</code></td><td><code>ExternalAgent</code>: opens the WebSocket, sends those messages, applies the action index Python returns.</td></tr>
+      <tr><td><code>ai_service/server.py</code></td><td>A <strong>random</strong> policy that already round-trips the protocol. This is your starting point — and your control group.</td></tr>
+    </tbody>
+  </table>
+
+  <p>So the TS side already <em>asks</em> for actions and <em>reports</em> transitions correctly. Your job is entirely on the Python side: replace the random policy with a learner. You will write four small files and rewrite one.</p>
+
+  <div class="callout info">
+    <span class="label">The one fact that makes this easy</span>
+    <p>Look at the <code>transition</code> message again (§08): it carries <code>state</code>, <code>actionIndex</code>, <code>nextState</code>, <code>done</code>, <em>and</em> the raw <code>env</code> data for reward. That is <strong>a complete RL transition on its own.</strong> Python learns purely from <code>transition</code> messages, and only needs the <code>state</code> from an <code>action_request</code> to <em>act</em>. You never have to manually pair a request with its result — the bridge already did that bookkeeping for you.</p>
+  </div>
+
+  <h3>What you'll build, in order</h3>
+  <table class="compact">
+    <thead><tr><th>Step</th><th>New file</th><th>Job</th><th>Theory</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><code>ai_service/rewards.py</code></td><td>Turn one transition's <code>env</code> into a scalar reward.</td><td>§10</td></tr>
+      <tr><td>2</td><td><code>ai_service/replay_buffer.py</code></td><td>Store transitions; hand back random minibatches.</td><td>§09</td></tr>
+      <tr><td>3</td><td><code>ai_service/dqn.py</code></td><td>The Q-network, ε-greedy action, and the training step.</td><td>§09</td></tr>
+      <tr><td>4</td><td><em>rewrite</em> <code>ai_service/server.py</code></td><td>Glue: act on requests, learn from transitions.</td><td>§11</td></tr>
+      <tr><td>5</td><td>—</td><td>Run it live and watch the car stop crashing.</td><td>§11</td></tr>
+      <tr><td>6</td><td><code>src/domain/ai/headlessRunner.ts</code></td><td>Step the sim with no rendering, for real training throughput.</td><td>§11</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Setup</h3>
+  <p>You need Python 3.10+ and the three libraries below. PyTorch is the network library (§09 recommended it); <code>websockets</code> speaks the protocol; <code>numpy</code> batches transitions efficiently.</p>
+  <pre><code class="language-bash">cd ai_service
+pip install websockets torch numpy</code></pre>
+  <p>All the new Python files live in <code>ai_service/</code> next to <code>server.py</code>, so they import each other by bare module name (<code>from dqn import DQNAgent</code>) as long as you launch with <code>python server.py</code> from inside that folder.</p>
+  <p class="code-pointer"><code>ai_service/</code></p>
+</section>
+
+<!-- ===================== 14. Build the Brain ===================== -->
+<section id="build-brain">
+  <span class="section-num">Part II · 14</span>
+  <h2>Building the Brain in Python</h2>
+  <p>Three files, bottom-up: reward (the signal), the replay buffer (the memory), then the network and the learning rule (the brain proper). None of them know about WebSockets — they're pure logic you could unit-test in isolation. The server in step 4 is what connects them to the game.</p>
+
+  <h3>Step 1 — Reward (<code>rewards.py</code>)</h3>
+  <p>Reward is the agent's <em>only</em> definition of "good" (§10). We compute it here, in Python, on purpose: it's the most-edited thing in any RL project, and keeping it on this side means several algorithms can share one definition without touching the simulator. Crucially, we read the <strong>raw</strong> <code>env</code> numbers (pixels, px/s) — not the normalized state vector — because reward is clearest in real units.</p>
+
+  <p>The one subtlety worth its own function is progress: when the car crosses the start line, the raw <code>progressDistance</code> snaps from ≈<code>totalLength</code> back to ≈0, which <em>looks</em> like a huge backward jump. We detect that wrap and treat it as a small forward step, then pay for the actual lap separately with a bonus.</p>
+
+  <pre><code class="language-python"># ai_service/rewards.py
+"""Turn a simulator transition into a single scalar reward (see guide §10)."""
+
+# The knobs you'll touch most. Start here when behavior is wrong.
+PROGRESS_SCALE     = 0.02
+SPEED_SCALE        = 0.0008
+STEER_PENALTY      = 0.01
+COLLISION_PENALTY  = 2.0
+OFF_TRACK_PENALTY  = 0.12
+STUCK_PENALTY      = 0.02
+STUCK_SPEED        = 12.0
+LAP_BONUS          = 8.0
+
+
+def progress_delta(env):
+    """Forward progress in px, with start-line wrap-around handled."""
+    delta = env["nextProgressDistance"] - env["previousProgressDistance"]
+    if delta &lt; -env["totalLength"] / 2:      # wrapped past the start line
+        delta += env["totalLength"]
+    return delta
+
+
+def compute_reward(env, action):
+    progress  = progress_delta(env) * PROGRESS_SCALE
+    speed     = env["speed"] * SPEED_SCALE
+    steer     = abs(action["steer"]) * STEER_PENALTY
+    collision = COLLISION_PENALTY if env["collision"] else 0.0
+    off_track = OFF_TRACK_PENALTY if env["offTrack"] else 0.0
+    stuck     = STUCK_PENALTY if env["speed"] &lt; STUCK_SPEED else 0.0
+    lap       = LAP_BONUS if env["lapCompleted"] else 0.0
+
+    return progress + speed + lap - steer - collision - off_track - stuck</code></pre>
+
+  <div class="callout">
+    <span class="label">Why pass <code>action</code> in</span>
+    <p>The steering penalty needs the steer value, but the transition only carries an <code>actionIndex</code>. The server (step 4) looks the index up in its copy of the action table and hands the resulting <code>{throttle, brake, steer}</code> dict to <code>compute_reward</code>. That's the only reason Python needs its own copy of <code>AI_ACTIONS</code>.</p>
+  </div>
+
+  <h3>Step 2 — Replay buffer (<code>replay_buffer.py</code>)</h3>
+  <p>Training on transitions in the order they arrive is unstable: consecutive frames are nearly identical, so each minibatch is a tiny, biased slice of the world (§09). The fix is a big ring buffer you sample <em>randomly</em> from — that decorrelates the data and lets rare events (a save from a spin, a lap completion) get revisited many times.</p>
+
+  <pre><code class="language-python"># ai_service/replay_buffer.py
+import random
+from collections import deque
+
+import numpy as np
+
+
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)   # drops the oldest when full
+
+    def push(self, state, action_index, reward, next_state, done):
+        self.buffer.append((state, action_index, reward, next_state, done))
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return (
+            np.array(states,      dtype=np.float32),
+            np.array(actions,     dtype=np.int64),
+            np.array(rewards,     dtype=np.float32),
+            np.array(next_states, dtype=np.float32),
+            np.array(dones,       dtype=np.float32),
+        )
+
+    def __len__(self):
+        return len(self.buffer)</code></pre>
+
+  <h3>Step 3 — The Q-network and learning rule (<code>dqn.py</code>)</h3>
+  <p>This is the brain. <code>QNetwork</code> is the function approximator from §09: 18 inputs → two 64-wide ReLU layers → one Q-value per action. <code>DQNAgent</code> wraps two copies of it — the <strong>online</strong> net it trains every step and the <strong>target</strong> net that sets the Bellman right-hand side and only updates occasionally. That separation is what stops the network from chasing its own moving target.</p>
+
+  <pre><code class="language-python"># ai_service/dqn.py
+import random
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class QNetwork(nn.Module):
+    """state vector (18) -> one Q-value per action (7)."""
+    def __init__(self, state_size, action_count, hidden=64):
+        super().__init__()
+        self.fc1 = nn.Linear(state_size, hidden)
+        self.fc2 = nn.Linear(hidden, hidden)
+        self.out = nn.Linear(hidden, action_count)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        return self.out(x)
+
+
+class DQNAgent:
+    def __init__(self, state_size, action_count, gamma=0.99, lr=2.5e-4):
+        self.action_count = action_count
+        self.gamma = gamma
+        self.online = QNetwork(state_size, action_count)
+        self.target = QNetwork(state_size, action_count)
+        self.target.load_state_dict(self.online.state_dict())   # start identical
+        self.optimizer = torch.optim.Adam(self.online.parameters(), lr=lr)
+
+    def act(self, state, epsilon):
+        """ε-greedy: explore with prob ε, otherwise take the greedy argmax."""
+        if random.random() &lt; epsilon:
+            return random.randrange(self.action_count)
+        with torch.no_grad():
+            q = self.online(torch.as_tensor(state, dtype=torch.float32))
+            return int(q.argmax().item())
+
+    def train_step(self, batch):
+        states, actions, rewards, next_states, dones = (torch.as_tensor(b) for b in batch)
+
+        # Q(s, a) for the actions we actually took
+        q = self.online(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        # TD target: reward + discounted best next value, from the FROZEN target net.
+        # (1 - done) zeroes the future term on terminal transitions.
+        with torch.no_grad():
+            next_q = self.target(next_states).max(dim=1).values
+            td_target = rewards + (1.0 - dones) * self.gamma * next_q
+
+        loss = F.smooth_l1_loss(q, td_target)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        return float(loss.item())
+
+    def sync_target(self):
+        self.target.load_state_dict(self.online.state_dict())
+
+    def save(self, path):
+        torch.save(self.online.state_dict(), path)</code></pre>
+
+  <div class="callout info">
+    <span class="label">Two small choices explained</span>
+    <p><strong><code>gather</code> then <code>max</code>.</strong> The network outputs all 7 Q-values; <code>gather</code> picks out the one for the action we took (that's what we're correcting), while the target side takes the <code>max</code> over next-state actions (that's the "best you could do from <em>s'</em>" in Bellman). <strong><code>smooth_l1_loss</code> (Huber)</strong> instead of plain MSE: it behaves like MSE for small errors but grows linearly for large ones, so a single wild TD target can't produce a giant gradient that destabilizes training.</p>
+  </div>
+</section>
+
+<!-- ===================== 15. Wire It Up ===================== -->
+<section id="build-wire">
+  <span class="section-num">Part II · 15</span>
+  <h2>Wiring It Up &amp; Training</h2>
+  <p>The brain is built but inert. This step connects it to the protocol by rewriting <code>server.py</code>, then runs it. The server's whole job is to answer two questions: when an <code>action_request</code> arrives, "what should I do?" (ε-greedy <code>act</code>); when a <code>transition</code> arrives, "what did I learn?" (reward → buffer → occasional <code>train_step</code>).</p>
+
+  <h3>Step 4 — The DQN server (<code>server.py</code>)</h3>
+  <p>Compare this to the random <code>server.py</code> you started with: the message-handling skeleton is <em>identical</em>. All that changed is that <code>action_request</code> now consults the agent, and <code>transition</code> now feeds the learner instead of being thrown away. The hyperparameters are the §11 starting set.</p>
+
+  <pre><code class="language-python"># ai_service/server.py
+import asyncio
+import json
+
+import websockets
+
+from dqn import DQNAgent
+from replay_buffer import ReplayBuffer
+from rewards import compute_reward
+
+# MUST match src/domain/ai/actions.ts exactly — same order, same values.
+AI_ACTIONS = [
+    {"throttle": 0.85, "brake": 0.0,  "steer":  0.0},
+    {"throttle": 0.75, "brake": 0.0,  "steer": -0.45},
+    {"throttle": 0.75, "brake": 0.0,  "steer":  0.45},
+    {"throttle": 0.35, "brake": 0.0,  "steer": -0.8},
+    {"throttle": 0.35, "brake": 0.0,  "steer":  0.8},
+    {"throttle": 0.0,  "brake": 0.65, "steer":  0.0},
+    {"throttle": 0.12, "brake": 0.25, "steer":  0.0},
+]
+STATE_SIZE   = 18
+ACTION_COUNT = len(AI_ACTIONS)
+
+# Hyperparameters — see guide §11.
+BATCH_SIZE          = 64
+REPLAY_CAPACITY     = 50_000
+WARMUP_STEPS        = 2_000     # collect experience before the first train_step
+TRAIN_EVERY         = 4
+TARGET_UPDATE_EVERY = 1_000
+EPSILON_START       = 1.0
+EPSILON_END         = 0.05
+EPSILON_DECAY_STEPS = 40_000
+
+
+def epsilon_at(step):
+    frac = min(1.0, step / EPSILON_DECAY_STEPS)
+    return EPSILON_START + frac * (EPSILON_END - EPSILON_START)
+
+
+class Trainer:
+    def __init__(self):
+        self.agent = DQNAgent(STATE_SIZE, ACTION_COUNT)
+        self.buffer = ReplayBuffer(REPLAY_CAPACITY)
+        self.step = 0          # global step, persists across episodes
+
+    def choose_action(self, state):
+        return self.agent.act(state, epsilon_at(self.step))
+
+    def observe(self, msg):
+        action = AI_ACTIONS[msg["actionIndex"]]
+        reward = compute_reward(msg["env"], action)
+        self.buffer.push(
+            msg["state"], msg["actionIndex"], reward,
+            msg["nextState"], 1.0 if msg["done"] else 0.0,
+        )
+        self.step += 1
+        if len(self.buffer) >= WARMUP_STEPS and self.step % TRAIN_EVERY == 0:
+            self.agent.train_step(self.buffer.sample(BATCH_SIZE))
+        if self.step % TARGET_UPDATE_EVERY == 0:
+            self.agent.sync_target()
+
+
+trainer = Trainer()
+
+
+async def handle_client(websocket):
+    print("Game connected.")
+    async for raw in websocket:
+        msg = json.loads(raw)
+        kind = msg["type"]
+
+        if kind == "session_start":
+            assert msg["stateSize"] == STATE_SIZE,     "state vector size mismatch"
+            assert msg["actionCount"] == ACTION_COUNT, "action count mismatch"
+            await websocket.send(json.dumps({
+                "type": "session_ready", "algorithm": "dqn", "training": True,
+            }))
+
+        elif kind == "action_request":
+            await websocket.send(json.dumps({
+                "type": "action_response",
+                "sessionId": msg["sessionId"],
+                "step": msg["step"],
+                "actionIndex": trainer.choose_action(msg["state"]),
+            }))
+
+        elif kind == "transition":
+            trainer.observe(msg)
+
+
+async def main():
+    print("DQN service on ws://localhost:8765 — start the game, select External.")
+    async with websockets.serve(handle_client, "localhost", 8765):
+        await asyncio.Future()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Known simplification: the <code>done</code> flag</span>
+    <p>The current <code>ExternalAgent</code> always sends <code>done: false</code>, so every transition is treated as non-terminal and the Bellman bootstrap never gets cut. That's fine to get learning off the ground — the track is effectively a continuing task — but it's technically wrong at crashes and timeouts. The honest fix, once basic driving works: have the bridge set <code>done: true</code> on a terminal event (hard collision, off-track timeout) and emit a <code>reset_request</code>, so the value of a crashed state collapses to just its immediate penalty. Don't do this pre-emptively; do it when you see the agent under-fearing walls.</p>
+  </div>
+
+  <h3>Step 5 — Run it and watch</h3>
+  <p>Two processes: the brain and the game. Start the brain first so the socket is listening when the game tries to connect.</p>
+  <pre><code class="language-bash"># terminal 1 — the brain
+cd ai_service
+python server.py
+
+# terminal 2 — the game
+npm install
+npm run dev          # then open the app and select the "External AI" agent</code></pre>
+  <p>What you should see, in order, over a training session:</p>
+  <ul>
+    <li><strong>Immediately:</strong> the car moves and twitches — that's ε≈1.0, almost pure random actions, same as the policy you started with. If it doesn't move at all, the bug is in the wiring, not the learner (see §12).</li>
+    <li><strong>After a few thousand steps:</strong> ε has decayed enough that the network's preferences start showing. Spin-outs become less frequent; the car begins favoring forward motion.</li>
+    <li><strong>Later:</strong> recognizable cornering. Average progress per episode should climb above the random baseline — that comparison <em>is</em> your proof of learning (§12).</li>
+  </ul>
+  <div class="callout">
+    <span class="label">Live mode is for watching, not training</span>
+    <p>Driving through the rendered React app caps you at ~60 steps/second. DQN wants hundreds of thousands of steps. Live mode is the right tool to <em>inspect</em> behavior and confirm the pipeline works — but for a real training run you need the headless runner below.</p>
+  </div>
+
+  <h3>Step 6 — Headless runner for real throughput (<code>headlessRunner.ts</code>)</h3>
+  <p>The simulator is a pure function (§02), so nothing stops you from stepping it in a tight loop with no canvas and no 60 Hz cap. It talks the <em>same</em> protocol to the <em>same</em> Python server; the server can't tell the difference. The two helpers below — <code>requestAction</code> (sends an <code>action_request</code> and <strong>awaits</strong> the matching <code>action_response</code>) and the inline <code>transition</code> send — are the part you implement; everything else reuses the exact functions the live app uses:</p>
+
+  <pre><code class="language-typescript">// src/domain/ai/headlessRunner.ts
+import { compileTrack } from '../track';
+import {
+  createInitialState, stepSimulation, buildObservation, DEFAULT_SIM_CONFIG,
+} from '../simulation';
+import { encodeObservation } from './encodeObservation';
+import { indexToAction } from './actions';
+import type { TrackJson } from '../types';
+
+// One episode, as fast as the CPU allows. `requestAction` / `sendTransition`
+// send the same action_request / transition messages the bridge sends (§08).
+export async function runEpisode(track: TrackJson, ws: WebSocket, maxSteps = 3000) {
+  const compiled = compileTrack(track);
+  let state = createInitialState(compiled, DEFAULT_SIM_CONFIG, 1);
+
+  for (let step = 0; step &lt; maxSteps; step++) {
+    const obs    = buildObservation(state.car, compiled, DEFAULT_SIM_CONFIG);
+    const vector = encodeObservation(obs, DEFAULT_SIM_CONFIG);
+
+    const actionIndex = await requestAction(ws, vector, step);   // → action_response
+    const next = stepSimulation(
+      state, indexToAction(actionIndex), compiled, DEFAULT_SIM_CONFIG.fixedDt, DEFAULT_SIM_CONFIG,
+    );
+    const nextObs = buildObservation(next.car, compiled, DEFAULT_SIM_CONFIG);
+
+    sendTransition(ws, {
+      step, state: vector, actionIndex, done: false,
+      nextState: encodeObservation(nextObs, DEFAULT_SIM_CONFIG),
+      env: {
+        previousProgressDistance: state.car.progressDistance,
+        nextProgressDistance: next.car.progressDistance,
+        totalLength: compiled.totalLength,
+        speed: Math.hypot(next.car.vx, next.car.vy),
+        collision: next.events.some((e) => e.type === 'collision'),
+        offTrack: next.car.offTrack,
+        lapCompleted: next.events.some((e) => e.type === 'lap'),
+        elapsed: next.elapsed,
+      },
+    });
+    state = next;
+  }
+}</code></pre>
+
+  <p>This module exports a function; it needs a tiny entry point to open a socket and call it. Put that in <code>scripts/headless.ts</code> (outside <code>src/</code>, so it stays out of the app's <code>tsc</code> build), then run it with <code>tsx</code>. On Node ≤ 20 there is no global <code>WebSocket</code>, so you add the <code>ws</code> package; on Node 22+ you can drop <code>ws</code> and use the built-in. "Disabling rendering" isn't a setting — this entry point simply never imports React or the canvas, only the domain functions.</p>
+
+  <pre><code class="language-typescript">// scripts/headless.ts  —  npm i -D tsx ws   then   npx tsx scripts/headless.ts
+import { WebSocket } from 'ws';
+import { runEpisode } from '../src/domain/ai/headlessRunner';
+import type { TrackJson } from '../src/domain/types';
+import track from '../Data/Tracks/track-2.track.json';
+
+const URL = process.env.AI_WS_URL ?? 'ws://localhost:8765';
+const EPISODES = Number(process.env.EPISODES ?? 50);
+const STEPS = Number(process.env.STEPS ?? 3000);
+
+function openSocket(url: string): Promise&lt;WebSocket&gt; {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.once('open', () => resolve(ws));
+    ws.once('error', reject);
+  });
+}
+
+(async () => {
+  const ws = await openSocket(URL);
+  for (let ep = 0; ep &lt; EPISODES; ep++) {
+    // ws's socket implements the addEventListener/send API runEpisode uses;
+    // the cast bridges its type to the DOM WebSocket type.
+    await runEpisode(track as unknown as TrackJson, ws as unknown as WebSocket, STEPS);
+  }
+  ws.close();
+})();</code></pre>
+
+  <pre><code class="language-bash"># terminal 1 — the policy (random to start, DQN once you've done steps 1-4)
+python ai_service/server.py
+
+# terminal 2 — the headless driver
+npm i -D tsx ws
+npx tsx scripts/headless.ts            # or: EPISODES=100 STEPS=5000 npx tsx scripts/headless.ts</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Reality check: round-trips, not rendering, are the limit</span>
+    <p>Removing the renderer uncaps the loop, but it does <strong>not</strong> automatically make training fast. Each step blocks on a full <code>action_request</code> → <code>action_response</code> socket round-trip, and that latency is unavoidable for a single environment (the next action depends on this step's result). Measured cold on Windows loopback, this runner does <strong>~47 steps/s</strong> — actually <em>below</em> the 60 Hz live cap. The real throughput lever is to amortize that latency: run <em>many</em> environments concurrently against one policy (vectorized envs), so the policy batches decisions and no single round-trip stalls the others — or co-locate the policy in-process and skip the socket entirely. Plan for that before you expect "10×."</p>
+  </div>
+
+  <div class="callout warn">
+    <span class="label">Why not just reuse <code>ExternalAgent</code>?</span>
+    <p>Tempting — it already speaks the protocol — but it's built for the <em>live</em> loop: <code>step()</code> fires an <code>action_request</code> and returns the <em>previously buffered</em> action without waiting, relying on the requestAnimationFrame loop to pump the socket between frames. A tight synchronous <code>for</code>-loop never yields, so those replies would never arrive and every action would be idle. That's exactly why the headless runner must <strong>await</strong> each <code>action_response</code> — correlate request and reply by <code>step</code> number, as the helper above does. Same protocol, but request/response instead of fire-and-buffer.</p>
+  </div>
+
+  <div class="callout success">
+    <span class="label">Definition of done for the build</span>
+    <p>You're finished when: <code>python server.py</code> accepts the session and the car drives from the network's actions; reward is computed in Python from raw <code>env</code> data; the replay buffer fills and <code>train_step</code> runs after warmup; and average progress per episode rises clearly above the random baseline. Everything past that — termination handling, evaluation runs, PPO/SAC, imitation pretraining — is iteration on a system that already works (§12).</p>
+  </div>
+  <p class="code-pointer"><code>ai_service/server.py</code> · <code>src/domain/ai/environmentBridge.ts</code></p>
 </section>
 
 </main>

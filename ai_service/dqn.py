@@ -51,15 +51,21 @@ class DQNAgent:
     def sync_target(self):
         self.target.load_state_dict(self.online.state_dict())
 
-    def save(self, path, step=0):
+    def save(self, path, step=0, best_lap_time=None, best_reward=None):
         torch.save({
             "online": self.online.state_dict(),
             "target": self.target.state_dict(),
             "step": step,
+            "best_lap_time": best_lap_time,
+            "best_reward": best_reward,
         }, path)
 
     def load(self, path):
         ckpt = torch.load(path, map_location="cpu")
         self.online.load_state_dict(ckpt["online"])
         self.target.load_state_dict(ckpt["target"])
-        return int(ckpt.get("step", 0))   # so epsilon resumes where it left off
+        return {
+            "step": int(ckpt.get("step", 0)),   # so epsilon resumes where it left off
+            "best_lap_time": ckpt.get("best_lap_time"),
+            "best_reward": ckpt.get("best_reward"),
+        }

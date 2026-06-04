@@ -117,6 +117,25 @@ describe('simulation', () => {
     expect(next.events.some((event) => event.type === 'collision')).toBe(true);
   });
 
+  it('starts timing at the first start-line crossing instead of counting it as a lap', () => {
+    const compiled = compileTrack(createDefaultTrack());
+    const config = { ...DEFAULT_SIM_CONFIG, engineForce: 100 };
+    let state = createInitialState(compiled, config);
+
+    for (let index = 0; index < 120; index += 1) {
+      state = stepSimulation(state, { throttle: 1, brake: 0, steer: 0 }, compiled, config.fixedDt, config);
+      if (state.events.some((event) => event.type === 'checkpoint' || event.type === 'lap')) break;
+    }
+
+    expect(state.elapsed).toBeGreaterThan(1);
+    expect(state.events).toContainEqual({ type: 'checkpoint', time: state.elapsed, checkpointIndex: 0 });
+    expect(state.events.some((event) => event.type === 'lap')).toBe(false);
+    expect(state.car.lap).toBe(0);
+    expect(state.lapStartTime).toBe(state.elapsed);
+    expect(state.car.lapTime).toBe(0);
+    expect(state.car.nextCheckpoint).toBe(1);
+  });
+
   it('builds ray observations and progress values', () => {
     const compiled = compileTrack(createDefaultTrack());
     const state = createInitialState(compiled);

@@ -5,6 +5,7 @@ import random
 
 import websockets
 
+from checkpoints import BestPerformanceTracker
 from dqn import DQNAgent
 from replay_buffer import ReplayBuffer
 from rewards import compute_rewards
@@ -31,7 +32,6 @@ LOG_EVERY           = 1_000
 EPSILON_START       = 1.0
 EPSILON_END         = 0.05
 EPSILON_DECAY_STEPS = 40_000
-SAVE_EVERY          = 5_000
 
 # Checkpoint lives next to this file (ai_service/models/dqn.pt) regardless of cwd.
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "dqn.pt")
@@ -46,12 +46,21 @@ class Trainer:
         self.agent = DQNAgent(STATE_SIZE, ACTION_COUNT)
         self.buffer = ReplayBuffer(REPLAY_CAPACITY)
         if os.path.exists(MODEL_PATH):
-            self.step = self.agent.load(MODEL_PATH)
+            checkpoint = self.agent.load(MODEL_PATH)
+            self.step = checkpoint["step"]
+            self.performance = BestPerformanceTracker(
+                checkpoint.get("best_lap_time"),
+                checkpoint.get("best_reward"),
+            )
             print(f"resumed from {MODEL_PATH} at step {self.step}", flush=True)
         else:
             self.step = 0           # global, persists across episodes
+            self.performance = BestPerformanceTracker()
         self.last_loss = None       # most recent train_step loss (None until warmup)
         self.reward_sum = 0.0       # reward accumulated since the last log line
+
+    def start_session(self, session_id):
+        self._save_if_needed(self.performance.start_session(session_id))
 
     def choose_action(self, state):
         return self.agent.act(state, epsilon_at(self.step))
@@ -64,6 +73,7 @@ class Trainer:
                          )
         self.step += 1
         self.reward_sum += reward
+        save_decision = self.performance.observe(reward, msg["env"])
         if len(self.buffer) >= WARMUP_STEPS and self.step % TRAIN_EVERY == 0:
             self.last_loss = self.agent.train_step(self.buffer.sample(BATCH_SIZE))
         if self.step % TARGET_UPDATE_EVERY == 0:
@@ -77,9 +87,25 @@ class Trainer:
                 flush=True,
             )
             self.reward_sum = 0.0
-        if self.step % SAVE_EVERY == 0:
-            self.agent.save(MODEL_PATH, self.step)
-            print(f"saved {MODEL_PATH} at step {self.step}", flush=True)
+        self._save_if_needed(save_decision)
+
+    def finalize(self, reason):
+        self._save_if_needed(self.performance.finalize_session(reason))
+
+    def _save_if_needed(self, decision):
+        if decision is None:
+            return
+        self.agent.save(
+            MODEL_PATH,
+            self.step,
+            self.performance.best_lap_time,
+            self.performance.best_reward,
+        )
+        print(
+            f"saved {MODEL_PATH} at step {self.step} "
+            f"({decision.reason}: {decision.metric}={decision.value:.3f})",
+            flush=True,
+        )
 
 trainer = Trainer()
 
@@ -97,6 +123,7 @@ async def handle_client(websocket):
         if kind == "session_start":
             assert msg["stateSize"] == STATE_SIZE,     "state vector size mismatch"
             assert msg["actionCount"] == ACTION_COUNT, "action count mismatch"
+            trainer.start_session(msg["sessionId"])
             await websocket.send(json.dumps({
                 "type": "session_ready", "algorithm": "dqn", "training": True,
             }))
@@ -124,5 +151,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     finally:
-        trainer.agent.save(MODEL_PATH, trainer.step)
-        print(f"saved {MODEL_PATH} at step {trainer.step} (exit)", flush=True)
+        trainer.finalize("exit")

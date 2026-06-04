@@ -40,7 +40,9 @@ export type TransitionMessage = {
     speed: number;
     collision: boolean;
     offTrack: boolean;
+    checkpointCompleted: boolean;
     lapCompleted: boolean;
+    lapTime?: number;
     elapsed: number;
   };
 };

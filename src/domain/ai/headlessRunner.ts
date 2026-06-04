@@ -84,6 +84,8 @@ export async function runEpisode(track: TrackJson, ws: WebSocket, maxSteps = 300
         state, indexToAction(actionIndex), compiled, DEFAULT_SIM_CONFIG.fixedDt, DEFAULT_SIM_CONFIG,
       );
       const collided = next.events.some((e) => e.type === 'collision');
+      const checkpointCompleted = next.events.some((e) => e.type === 'checkpoint');
+      const lapEvent = next.events.find((e) => e.type === 'lap');
       const nextObs = buildObservation(next.car, compiled, DEFAULT_SIM_CONFIG, collided);
 
       ws.send(JSON.stringify({
@@ -101,7 +103,9 @@ export async function runEpisode(track: TrackJson, ws: WebSocket, maxSteps = 300
           speed: Math.hypot(next.car.vx, next.car.vy),
           collision: collided,
           offTrack: next.car.offTrack,
-          lapCompleted: next.events.some((e) => e.type === 'lap'),
+          checkpointCompleted,
+          lapCompleted: Boolean(lapEvent),
+          lapTime: lapEvent?.type === 'lap' ? lapEvent.lapTime : undefined,
           elapsed: next.elapsed,
         },
       }));

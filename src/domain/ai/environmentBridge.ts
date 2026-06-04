@@ -136,7 +136,9 @@ export class ExternalAgent implements Agent {
     if (this.status !== 'ready' || this.lastRequestState.length === 0) return;
 
     const nextState = encodeObservation(nextObs, DEFAULT_SIM_CONFIG);
-    const lapCompleted = next.events.some((e) => e.type === 'lap');
+    const checkpointCompleted = next.events.some((e) => e.type === 'checkpoint');
+    const lapEvent = next.events.find((e) => e.type === 'lap');
+    const lapCompleted = Boolean(lapEvent);
     const collision = next.events.some((e) => e.type === 'collision');
 
     this._send({
@@ -154,7 +156,9 @@ export class ExternalAgent implements Agent {
         speed: Math.hypot(next.car.vx, next.car.vy),
         collision,
         offTrack: next.car.offTrack,
+        checkpointCompleted,
         lapCompleted,
+        lapTime: lapEvent?.type === 'lap' ? lapEvent.lapTime : undefined,
         elapsed: next.elapsed,
       },
     });

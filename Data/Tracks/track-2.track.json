@@ -5,12 +5,6 @@
     "createdAt": "2026-04-23T21:33:55.091Z",
     "description": "Default centerline loop"
   },
-  "globalWidth": 143,
-  "start": {
-    "pointIndex": 0,
-    "direction": 1
-  },
-  "checkpointCount": 6,
   "centerline": [
     {
       "id": "p0",
@@ -69,8 +63,8 @@
     },
     {
       "id": "pmoc0676r761632",
-      "x": 771.7969379532635,
-      "y": 544.0773569701853
+      "x": 771.606236938885,
+      "y": 552.7282411524991
     },
     {
       "id": "p6",
@@ -82,5 +76,11 @@
       "x": 263.81950040290087,
       "y": 669.7824335213537
     }
-  ]
+  ],
+  "globalWidth": 143,
+  "start": {
+    "pointIndex": 0,
+    "direction": 1
+  },
+  "checkpointCount": 10
 }

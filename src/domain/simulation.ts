@@ -172,7 +172,11 @@ export function stepSimulation(
     guard < checkpointCount && crossedForward(previousProgress, progressDelta, checkpoints[nextCheckpoint]?.progress ?? 0, compiled.totalLength);
     guard += 1
   ) {
-    if (nextCheckpoint === 0 && state.elapsed > 1) {
+    if (nextCheckpoint === 0 && car.lap === 0 && state.lapStartTime === 0) {
+      lapStartTime = elapsed;
+      car.lapTime = 0;
+      events.push({ type: 'checkpoint', time: elapsed, checkpointIndex: nextCheckpoint });
+    } else if (nextCheckpoint === 0) {
       const lapTime = elapsed - state.lapStartTime;
       car.lap += 1;
       car.lastLapTime = lapTime;

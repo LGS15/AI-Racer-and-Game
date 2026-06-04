@@ -9,19 +9,43 @@
 // Tune:     EPISODES=100 STEPS=5000 AI_WS_URL=ws://localhost:8765 npx tsx scripts/headless.ts
 
 import { WebSocket } from 'ws';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runEpisode } from '../src/domain/ai/headlessRunner';
-import type { TrackJson } from '../src/domain/types';
+import type { LapTraceJson, TrackJson } from '../src/domain/types';
 import track from '../Data/Tracks/track-2.track.json';
 
 const URL = process.env.AI_WS_URL ?? 'ws://localhost:8765';
 const EPISODES = Number(process.env.EPISODES ?? 50);
 const STEPS = Number(process.env.STEPS ?? 3000);
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const TRACE_DIR = path.join(PROJECT_ROOT, 'Data', 'Runs', 'lap-traces');
 
-function openSocket(url: string): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
-    ws.once('open', () => resolve(ws));
-    ws.once('error', reject);
+async function openSocket(url: string, timeoutMs = 30000): Promise<WebSocket> {
+  const started = Date.now();
+  let lastError: unknown;
+  while (Date.now() - started < timeoutMs) {
+    try {
+      return await new Promise((resolve, reject) => {
+        const ws = new WebSocket(url);
+        ws.once('open', () => resolve(ws));
+        ws.once('error', (error) => {
+          ws.close();
+          reject(error);
+        });
+      });
+    } catch (error) {
+      lastError = error;
+      await wait(500);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`Could not connect to ${url}`);
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
 }
 
@@ -30,10 +54,18 @@ async function main(): Promise<void> {
   console.log(`connected to ${URL} — running ${EPISODES} episodes × ${STEPS} steps`);
 
   const started = Date.now();
+  let bestLapTime = loadBestLapTime(TRACE_DIR);
   for (let ep = 0; ep < EPISODES; ep++) {
     // The `ws` package's socket implements the WHATWG addEventListener/send API
     // runEpisode relies on; the cast bridges its type to the DOM WebSocket type.
-    await runEpisode(track as unknown as TrackJson, ws as unknown as WebSocket, STEPS);
+    const result = await runEpisode(track as unknown as TrackJson, ws as unknown as WebSocket, STEPS);
+    for (const trace of result.lapTraces) {
+      if (trace.lapTime < bestLapTime) {
+        bestLapTime = trace.lapTime;
+        const savedPath = saveLapTrace(trace, ep + 1);
+        console.log(`new fastest lap ${trace.lapTime.toFixed(3)}s saved to ${savedPath}`);
+      }
+    }
     console.log(`episode ${ep + 1}/${EPISODES} done`);
   }
 
@@ -47,3 +79,26 @@ main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
+function loadBestLapTime(directory: string): number {
+  if (!existsSync(directory)) return Number.POSITIVE_INFINITY;
+  return readdirSync(directory)
+    .filter((file) => file.endsWith('.lap-trace.json'))
+    .reduce((best, file) => {
+      try {
+        const trace = JSON.parse(readFileSync(path.join(directory, file), 'utf8')) as Partial<LapTraceJson>;
+        return Number.isFinite(trace.lapTime) && Number(trace.lapTime) > 0 ? Math.min(best, Number(trace.lapTime)) : best;
+      } catch {
+        return best;
+      }
+    }, Number.POSITIVE_INFINITY);
+}
+
+function saveLapTrace(trace: LapTraceJson, episode: number): string {
+  mkdirSync(TRACE_DIR, { recursive: true });
+  const lapMillis = Math.round(trace.lapTime * 1000).toString().padStart(6, '0');
+  const fileName = `fastest-lap-${lapMillis}ms-episode-${episode}-lap-${trace.lap}.lap-trace.json`;
+  const target = path.join(TRACE_DIR, fileName);
+  writeFileSync(target, `${JSON.stringify(trace, null, 2)}\n`, 'utf8');
+  return path.relative(PROJECT_ROOT, target);
+}

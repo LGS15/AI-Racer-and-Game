@@ -202,3 +202,31 @@ export interface ReplayJson {
   laps: ReplayLap[];
   events: SimulationEvent[];
 }
+
+export interface LapTracePoint {
+  t: number;
+  x: number;
+  y: number;
+  speed: number;
+  progressDistance: number;
+  offTrack: boolean;
+}
+
+export interface LapTraceJson {
+  version: 1;
+  trackVersion: 1;
+  trackHash: string;
+  seed: number;
+  createdAt: string;
+  agent: {
+    id: string;
+    label: string;
+  };
+  source: {
+    sessionId: string;
+  };
+  lap: number;
+  lapTime: number;
+  completedAt: number;
+  points: LapTracePoint[];
+}

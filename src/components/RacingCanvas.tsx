@@ -17,7 +17,7 @@ import {
 } from '../domain/track';
 import { distance, dot, fromAngle, normalize, rightNormal, sub } from '../domain/geometry';
 import { sampleReplayFrame } from '../domain/replay';
-import type { AgentObservation, CarState, CompiledTrack, Mode, ReplayJson, TrackJson, TrackPoint, Vec2 } from '../domain/types';
+import type { AgentObservation, CarState, CompiledTrack, LapTraceJson, Mode, ReplayJson, TrackJson, TrackPoint, Vec2 } from '../domain/types';
 
 const WORLD_WIDTH = 1200;
 const WORLD_HEIGHT = 800;
@@ -48,6 +48,7 @@ interface RacingCanvasProps {
   compiled?: CompiledTrack;
   car?: CarState;
   observation?: AgentObservation;
+  lapTrace?: LapTraceJson;
   replay?: ReplayJson;
   replayTime: number;
   displayZoom: number;
@@ -73,6 +74,7 @@ export default function RacingCanvas({
   compiled,
   car,
   observation,
+  lapTrace,
   replay,
   replayTime,
   displayZoom,
@@ -98,7 +100,7 @@ export default function RacingCanvas({
 
   useEffect(() => {
     draw();
-  }, [mode, track, compiled, car, observation, replay, replayTime, displayZoom, selectedPointId, selectedCheckpointId, editorTool]);
+  }, [mode, track, compiled, car, observation, lapTrace, replay, replayTime, displayZoom, selectedPointId, selectedCheckpointId, editorTool]);
 
   function draw() {
     const canvas = canvasRef.current;
@@ -125,6 +127,7 @@ export default function RacingCanvas({
     drawWorld(ctx);
     if (compiled) {
       drawTrack(ctx, compiled);
+      drawLapTrace(ctx, lapTrace);
       drawReplay(ctx, replay, replayTime);
       if (car && mode !== 'analyze') drawSensors(ctx, car, observation);
       if (car && mode !== 'analyze') drawCar(ctx, car, CANVAS_COLORS.red, CANVAS_COLORS.yellow);
@@ -343,6 +346,39 @@ function drawTrack(ctx: CanvasRenderingContext2D, compiled: CompiledTrack) {
     }
     ctx.restore();
   }
+}
+
+function drawLapTrace(ctx: CanvasRenderingContext2D, trace: LapTraceJson | undefined) {
+  if (!trace || trace.points.length === 0) return;
+  ctx.save();
+  ctx.lineWidth = 12;
+  ctx.strokeStyle = 'rgba(216, 255, 47, 0.2)';
+  drawTracePath(ctx, trace);
+  ctx.stroke();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(216, 255, 47, 0.9)';
+  drawTracePath(ctx, trace);
+  ctx.stroke();
+
+  const first = trace.points[0];
+  const last = trace.points[trace.points.length - 1];
+  ctx.fillStyle = CANVAS_COLORS.green;
+  ctx.beginPath();
+  ctx.arc(first.x, first.y, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = CANVAS_COLORS.red;
+  ctx.beginPath();
+  ctx.arc(last.x, last.y, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawTracePath(ctx: CanvasRenderingContext2D, trace: LapTraceJson) {
+  ctx.beginPath();
+  trace.points.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
 }
 
 function drawReplay(ctx: CanvasRenderingContext2D, replay: ReplayJson | undefined, replayTime: number) {

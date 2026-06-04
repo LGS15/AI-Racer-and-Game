@@ -4,13 +4,17 @@ import {
 } from '../simulation';
 import { encodeObservation, STATE_VECTOR_SIZE, STATE_VECTOR_VERSION } from './encodeObservation';
 import { indexToAction, AI_ACTIONS, ACTION_SPACE_VERSION } from './actions';
-import type { TrackJson } from '../types';
+import type { LapTraceJson, LapTracePoint, SimulationState, TrackJson } from '../types';
 
 // Resolvers for in-flight action_request messages, keyed by step. Unlike the
 // live ExternalAgent (which fires-and-buffers and relies on the rAF loop to
 // pump the socket), a tight headless loop must *await* each reply — so we
 // correlate request and response by step number here.
 type Pending = Map<number, (actionIndex: number) => void>;
+
+export interface EpisodeResult {
+  lapTraces: LapTraceJson[];
+}
 
 // Listens for the policy's messages: resolves a pending action_request when its
 // action_response arrives, and signals readiness on session_ready. Returns a
@@ -50,10 +54,13 @@ function requestAction(ws: WebSocket, pending: Pending, sessionId: string, step:
 // One episode, as fast as the CPU allows, over an already-open socket. Talks the
 // same protocol (§08) to the same Python policy as the live bridge — the policy
 // can't tell the difference, but there's no canvas and no 60 Hz cap.
-export async function runEpisode(track: TrackJson, ws: WebSocket, maxSteps = 3000): Promise<void> {
+export async function runEpisode(track: TrackJson, ws: WebSocket, maxSteps = 3000): Promise<EpisodeResult> {
   const compiled = compileTrack(track);
   const sessionId = `headless-${Date.now()}`;
   const pending: Pending = new Map();
+  const lapTraces: LapTraceJson[] = [];
+  let currentLapPoints: LapTracePoint[] = [];
+  let lastTraceSampleAt = -Infinity;
 
   let markReady: () => void = () => {};
   const ready = new Promise<void>((resolve) => { markReady = resolve; });
@@ -87,6 +94,38 @@ export async function runEpisode(track: TrackJson, ws: WebSocket, maxSteps = 300
       const checkpointCompleted = next.events.some((e) => e.type === 'checkpoint');
       const lapEvent = next.events.find((e) => e.type === 'lap');
       const nextObs = buildObservation(next.car, compiled, DEFAULT_SIM_CONFIG, collided);
+      const tracePoint = toTracePoint(next, compiled.totalLength);
+      const startsTimedLap = next.events.some((e) => e.type === 'checkpoint' && e.checkpointIndex === 0);
+      const shouldSampleTrace = tracePoint.t - lastTraceSampleAt >= 1 / 20 || next.events.length > 0;
+
+      if (startsTimedLap) {
+        currentLapPoints = [tracePoint];
+        lastTraceSampleAt = tracePoint.t;
+      } else if (currentLapPoints.length > 0 && shouldSampleTrace) {
+        currentLapPoints.push(tracePoint);
+        lastTraceSampleAt = tracePoint.t;
+      }
+
+      if (lapEvent?.type === 'lap') {
+        if (currentLapPoints[currentLapPoints.length - 1] !== tracePoint) {
+          currentLapPoints.push(tracePoint);
+        }
+        lapTraces.push({
+          version: 1,
+          trackVersion: track.version,
+          trackHash: hashTrack(track),
+          seed: 1,
+          createdAt: new Date().toISOString(),
+          agent: { id: 'external', label: 'External AI' },
+          source: { sessionId },
+          lap: lapEvent.lap,
+          lapTime: round(lapEvent.lapTime),
+          completedAt: round(lapEvent.time),
+          points: currentLapPoints.map((point) => ({ ...point })),
+        });
+        currentLapPoints = [tracePoint];
+        lastTraceSampleAt = tracePoint.t;
+      }
 
       ws.send(JSON.stringify({
         type: 'transition',
@@ -112,7 +151,23 @@ export async function runEpisode(track: TrackJson, ws: WebSocket, maxSteps = 300
 
       state = next;
     }
+    return { lapTraces };
   } finally {
     detach();
   }
+}
+
+function toTracePoint(state: SimulationState, totalLength: number): LapTracePoint {
+  return {
+    t: round(state.elapsed),
+    x: round(state.car.x),
+    y: round(state.car.y),
+    speed: round(Math.hypot(state.car.vx, state.car.vy)),
+    progressDistance: round(state.car.progressDistance % totalLength),
+    offTrack: state.car.offTrack,
+  };
+}
+
+function round(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }

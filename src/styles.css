@@ -718,6 +718,14 @@ button.active,
   gap: 12px;
 }
 
+.trainingStack {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
 .statsGrid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -777,9 +785,69 @@ button.active,
   height: 116px;
 }
 
+.trainingLapChart {
+  height: 142px;
+}
+
 .chartAxis {
   stroke: rgba(16, 19, 26, 0.2);
   stroke-width: 1;
+}
+
+.lapMarker {
+  fill: #ffffff;
+  stroke: var(--violet);
+  stroke-width: 2;
+}
+
+.lapMarker.newBest {
+  fill: var(--yellow);
+  stroke: var(--ink);
+  stroke-width: 2.5;
+}
+
+.milestoneBlock {
+  min-width: 0;
+}
+
+.milestoneList {
+  display: grid;
+  gap: 6px;
+}
+
+.milestoneRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background:
+    linear-gradient(90deg, rgba(216, 255, 47, 0.16), transparent 42%),
+    var(--panel-tint);
+}
+
+.milestoneRow.empty {
+  background: var(--panel-tint);
+}
+
+.milestoneRow span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.milestoneRow strong {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .legend {

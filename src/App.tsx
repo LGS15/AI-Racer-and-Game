@@ -18,6 +18,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Route,
   Ruler,
   Save,
   Trash2,
@@ -26,10 +27,11 @@ import {
   ZoomOut
 } from 'lucide-react';
 import RacingCanvas, { deleteSelectedCheckpoint, deleteSelectedPoint } from './components/RacingCanvas';
-import { ReplayCharts } from './components/Charts';
+import { ReplayCharts, TrainingProgressCharts } from './components/Charts';
 import { bundledTracks } from './data/tracks';
 import { ReferenceLineAgent, getAgentLabel, manualActionFromInput } from './domain/agents';
 import { ExternalAgent, type BridgeStatus } from './domain/ai/environmentBridge';
+import { validateLapTraceJson } from './domain/lapTrace';
 import { DEFAULT_SIM_CONFIG, buildObservation, createInitialState, stepSimulation } from './domain/simulation';
 import {
   clearTrackPointWidth,
@@ -43,7 +45,8 @@ import {
   validateTrackJson
 } from './domain/track';
 import { createReplayBuilder, finalizeReplay, recordReplayFrame, sampleReplayFrame, validateReplayJson } from './domain/replay';
-import type { AgentAction, AgentObservation, Mode, ReplayJson, SimulationState, TrackJson, Vec2 } from './domain/types';
+import { parseTrainingProgressCsv, type TrainingProgressRow } from './domain/trainingProgress';
+import type { AgentAction, AgentObservation, LapTraceJson, Mode, ReplayJson, SimulationState, TrackJson, Vec2 } from './domain/types';
 
 type AgentKind = 'manual' | 'reference' | 'external';
 type EditorTool = 'select' | 'insert' | 'checkpoint' | 'barrier';
@@ -60,6 +63,8 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [recording, setRecording] = useState(false);
   const [replay, setReplay] = useState<ReplayJson | undefined>();
+  const [lapTrace, setLapTrace] = useState<LapTraceJson | undefined>();
+  const [trainingProgress, setTrainingProgress] = useState<TrainingProgressRow[] | undefined>();
   const [replayTime, setReplayTime] = useState(0);
   const [replayPlaying, setReplayPlaying] = useState(false);
   const [editorTool, setEditorTool] = useState<EditorTool>('select');
@@ -100,8 +105,11 @@ export default function App() {
   const [wsStatus, setWsStatus] = useState<BridgeStatus>('disconnected');
   const trackImportRef = useRef<HTMLInputElement | null>(null);
   const replayImportRef = useRef<HTMLInputElement | null>(null);
+  const lapTraceImportRef = useRef<HTMLInputElement | null>(null);
+  const trainingProgressImportRef = useRef<HTMLInputElement | null>(null);
 
   const replayTrackMismatch = replay ? replay.trackHash !== hashTrack(track) : false;
+  const lapTraceTrackMismatch = lapTrace ? lapTrace.trackHash !== hashTrack(track) : false;
   const bundledTrackId = useMemo(() => {
     const currentHash = hashTrack(track);
     return bundledTracks.find((candidate) => {
@@ -310,6 +318,43 @@ export default function App() {
     }
   }
 
+  async function importLapTrace(file?: File) {
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as unknown;
+      const result = validateLapTraceJson(parsed);
+      if (!result.ok || !result.value) {
+        setNotice(result.errors.join(' '));
+        return;
+      }
+      setLapTrace(result.value);
+      setMode('analyze');
+      setNotice('Lap trace imported.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Lap trace import failed.');
+    } finally {
+      if (lapTraceImportRef.current) lapTraceImportRef.current.value = '';
+    }
+  }
+
+  async function importTrainingProgress(file?: File) {
+    if (!file) return;
+    try {
+      const result = parseTrainingProgressCsv(await file.text());
+      if (!result.ok || !result.value) {
+        setNotice(result.errors.join(' '));
+        return;
+      }
+      setTrainingProgress(result.value);
+      setMode('analyze');
+      setNotice(`Training progress imported (${result.value.length} rows).`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Training progress import failed.');
+    } finally {
+      if (trainingProgressImportRef.current) trainingProgressImportRef.current.value = '';
+    }
+  }
+
   function holdControl(code: string, isHeld: boolean) {
     const next = new Set(heldControlsRef.current);
     if (isHeld) next.add(code);
@@ -414,6 +459,7 @@ export default function App() {
             compiled={compiled}
             car={snapshot?.car}
             observation={observation}
+            lapTrace={mode === 'analyze' ? lapTrace : undefined}
             replay={mode === 'analyze' ? replay : undefined}
             replayTime={replayTime}
             displayZoom={trackZoom}
@@ -479,6 +525,13 @@ export default function App() {
                   aria-label="Replay timeline"
                 />
                 <strong>{replayTime.toFixed(1)}s</strong>
+              </>
+            ) : mode === 'analyze' && lapTrace ? (
+              <>
+                <span>Trace lap {lapTrace.lap}</span>
+                <span>{lapTrace.lapTime.toFixed(2)}s</span>
+                <span>{lapTrace.points.length} points</span>
+                <span>{lapTrace.agent.label}</span>
               </>
             ) : (
               <>
@@ -790,17 +843,53 @@ export default function App() {
             )}
           </section>
 
+          <section className="panelSection">
+            <div className="sectionHeader">
+              <h2>Lap Trace</h2>
+              <div className="buttonRow">
+                <button className="iconButton" onClick={() => lapTraceImportRef.current?.click()} title="Import lap trace">
+                  <Route size={18} />
+                </button>
+              </div>
+            </div>
+            {lapTrace ? (
+              <>
+                <div className={lapTraceTrackMismatch ? 'statusLine warning' : 'statusLine'}>
+                  <span>{lapTrace.agent.label}</span>
+                  <strong>{lapTrace.lapTime.toFixed(2)}s</strong>
+                </div>
+                <div className="statusLine">
+                  <span>Path</span>
+                  <strong>{lapTrace.points.length} points</strong>
+                </div>
+              </>
+            ) : (
+              <div className="statusLine">
+                <span>Empty</span>
+                <strong>-</strong>
+              </div>
+            )}
+          </section>
+
           <section className="panelSection analysisPanel">
             <div className="sectionHeader">
               <h2>Analysis</h2>
+              <div className="buttonRow">
+                <button className="iconButton" onClick={() => trainingProgressImportRef.current?.click()} title="Import training progress CSV">
+                  <Upload size={18} />
+                </button>
+              </div>
             </div>
             <ReplayCharts replay={replay} />
+            <TrainingProgressCharts rows={trainingProgress} />
           </section>
         </aside>
       </section>
 
       <input ref={trackImportRef} type="file" accept="application/json,.json" hidden onChange={(event) => void importTrack(event.target.files?.[0])} />
       <input ref={replayImportRef} type="file" accept="application/json,.json" hidden onChange={(event) => void importReplay(event.target.files?.[0])} />
+      <input ref={lapTraceImportRef} type="file" accept="application/json,.json" hidden onChange={(event) => void importLapTrace(event.target.files?.[0])} />
+      <input ref={trainingProgressImportRef} type="file" accept="text/csv,.csv" hidden onChange={(event) => void importTrainingProgress(event.target.files?.[0])} />
 
       <div className={notice ? 'toast show' : 'toast'}>{notice}</div>
     </main>

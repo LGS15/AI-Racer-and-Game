@@ -15,6 +15,7 @@ import {
 } from './track';
 import { DEFAULT_SIM_CONFIG, buildObservation, clampAction, createInitialState, stepSimulation } from './simulation';
 import { createReplayBuilder, finalizeReplay, recordReplayFrame, sampleReplayFrame, validateReplayJson } from './replay';
+import { validateLapTraceJson } from './lapTrace';
 import type { AgentAction } from './types';
 
 describe('track generation', () => {
@@ -260,6 +261,29 @@ describe('agents and replay', () => {
     expect(validation.ok).toBe(true);
     expect(replay.frames.length).toBeGreaterThan(0);
     expect(sampleReplayFrame(replay, replay.duration / 2)).toBeDefined();
+  });
+
+  it('validates path-only lap traces for training progress overlays', () => {
+    const trace = {
+      version: 1,
+      trackVersion: 1,
+      trackHash: hashTrack(createDefaultTrack()),
+      seed: 1,
+      createdAt: '2026-06-04T00:00:00.000Z',
+      agent: { id: 'external', label: 'External AI' },
+      source: { sessionId: 'headless-test' },
+      lap: 1,
+      lapTime: 12.5,
+      completedAt: 40,
+      points: [
+        { t: 27.5, x: 100, y: 100, speed: 120, progressDistance: 0, offTrack: false },
+        { t: 40, x: 100, y: 100, speed: 130, progressDistance: 0, offTrack: false }
+      ]
+    };
+
+    expect(validateLapTraceJson(trace).ok).toBe(true);
+    expect(validateLapTraceJson({ ...trace, points: [] }).ok).toBe(false);
+    expect(validateLapTraceJson({ ...trace, points: [{ ...trace.points[0], x: 'bad' }, trace.points[1]] }).ok).toBe(false);
   });
 });
 

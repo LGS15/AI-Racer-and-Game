@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import random
 
@@ -7,6 +8,7 @@ import websockets
 
 from checkpoints import BestPerformanceTracker
 from dqn import DQNAgent
+from progress import TrainingProgressLogger
 from replay_buffer import ReplayBuffer
 from rewards import compute_rewards
 
@@ -35,6 +37,8 @@ EPSILON_DECAY_STEPS = 40_000
 
 # Checkpoint lives next to this file (ai_service/models/dqn.pt) regardless of cwd.
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "dqn.pt")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+METRICS_PATH = os.path.join(PROJECT_ROOT, "Data", "Metrics", "training_progress.csv")
 os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
 
 def epsilon_at(step):
@@ -45,6 +49,7 @@ class Trainer:
     def __init__(self):
         self.agent = DQNAgent(STATE_SIZE, ACTION_COUNT)
         self.buffer = ReplayBuffer(REPLAY_CAPACITY)
+        self.progress = TrainingProgressLogger(METRICS_PATH)
         if os.path.exists(MODEL_PATH):
             checkpoint = self.agent.load(MODEL_PATH)
             self.step = checkpoint["step"]
@@ -74,6 +79,7 @@ class Trainer:
         self.step += 1
         self.reward_sum += reward
         save_decision = self.performance.observe(reward, msg["env"])
+        lap_time = _lap_time_from_env(msg["env"])
         if len(self.buffer) >= WARMUP_STEPS and self.step % TRAIN_EVERY == 0:
             self.last_loss = self.agent.train_step(self.buffer.sample(BATCH_SIZE))
         if self.step % TARGET_UPDATE_EVERY == 0:
@@ -81,12 +87,32 @@ class Trainer:
         if self.step % LOG_EVERY == 0:
             mean_reward = self.reward_sum / LOG_EVERY
             loss = f"{self.last_loss:.4f}" if self.last_loss is not None else "warmup"
+            self.progress.log_interval(
+                self.step,
+                epsilon_at(self.step),
+                len(self.buffer),
+                mean_reward,
+                self.last_loss,
+                self.performance.best_lap_time,
+                self.performance.best_reward,
+            )
             print(
                 f"step {self.step:>7}  eps {epsilon_at(self.step):.3f}  "
                 f"buffer {len(self.buffer):>6}  mean_reward {mean_reward:+.4f}  loss {loss}",
                 flush=True,
             )
             self.reward_sum = 0.0
+        if lap_time is not None:
+            self.progress.log_lap(
+                self.step,
+                epsilon_at(self.step),
+                len(self.buffer),
+                self.last_loss,
+                lap_time,
+                self.performance.best_lap_time,
+                self.performance.best_reward,
+                save_decision is not None and save_decision.metric == "lap_time",
+            )
         self._save_if_needed(save_decision)
 
     def finalize(self, reason):
@@ -101,6 +127,15 @@ class Trainer:
             self.performance.best_lap_time,
             self.performance.best_reward,
         )
+        self.progress.log_checkpoint(
+            decision,
+            self.step,
+            epsilon_at(self.step),
+            len(self.buffer),
+            self.last_loss,
+            self.performance.best_lap_time,
+            self.performance.best_reward,
+        )
         print(
             f"saved {MODEL_PATH} at step {self.step} "
             f"({decision.reason}: {decision.metric}={decision.value:.3f})",
@@ -108,6 +143,16 @@ class Trainer:
         )
 
 trainer = Trainer()
+
+
+def _lap_time_from_env(env):
+    if not env.get("lapCompleted"):
+        return None
+    try:
+        lap_time = float(env.get("lapTime"))
+    except (TypeError, ValueError):
+        return None
+    return lap_time if math.isfinite(lap_time) and lap_time > 0 else None
 
 
 

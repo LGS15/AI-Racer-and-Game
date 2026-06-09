@@ -22,7 +22,7 @@ AI_ACTIONS = [
     {"throttle": 0.0,  "brake": 0.65, "steer":  0.0},
     {"throttle": 0.12, "brake": 0.25, "steer":  0.0},
 ]
-STATE_SIZE = 18
+STATE_SIZE = 28
 ACTION_COUNT = len(AI_ACTIONS)
 
 BATCH_SIZE          = 64

@@ -7,6 +7,11 @@
 // Run:      npx tsx scripts/headless.ts
 //           (start the Python policy first, e.g. `python ai_service/server.py`)
 // Tune:     EPISODES=100 STEPS=5000 AI_WS_URL=ws://localhost:8765 npx tsx scripts/headless.ts
+// Runs:     RUN_NAME=vision-v2 npx tsx scripts/headless.ts
+//           Each run writes its saved best laps to Data/Runs/<RUN_NAME>/, so a
+//           later model (e.g. a vision change) lands in its own folder and the
+//           notebook can compare runs side by side. Defaults to "lap-traces"
+//           to preserve the original flat output location.
 
 import { WebSocket } from 'ws';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -20,7 +25,11 @@ const URL = process.env.AI_WS_URL ?? 'ws://localhost:8765';
 const EPISODES = Number(process.env.EPISODES ?? 50);
 const STEPS = Number(process.env.STEPS ?? 3000);
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const TRACE_DIR = path.join(PROJECT_ROOT, 'Data', 'Runs', 'lap-traces');
+// One folder per training run keeps each model's saved best laps separate so the
+// notebook can compare them. Sanitize the name to a single path segment so it
+// can't escape Data/Runs/.
+const RUN_NAME = (process.env.RUN_NAME ?? 'lap-traces').replace(/[^A-Za-z0-9._-]+/g, '-');
+const TRACE_DIR = path.join(PROJECT_ROOT, 'Data', 'Runs', RUN_NAME);
 
 async function openSocket(url: string, timeoutMs = 30000): Promise<WebSocket> {
   const started = Date.now();
@@ -51,7 +60,7 @@ function wait(ms: number): Promise<void> {
 
 async function main(): Promise<void> {
   const ws = await openSocket(URL);
-  console.log(`connected to ${URL} — running ${EPISODES} episodes × ${STEPS} steps`);
+  console.log(`connected to ${URL} — running ${EPISODES} episodes × ${STEPS} steps, saving to Data/Runs/${RUN_NAME}/`);
 
   const started = Date.now();
   let bestLapTime = loadBestLapTime(TRACE_DIR);

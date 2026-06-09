@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class QNetwork(nn.Module):
-    #state vector (18) into qvalues for each action (7)
+    #state vector (28) into qvalues for each action (7)
     def __init__(self,state_size,action_count, hidden=64):
         super().__init__()
         self.fc1 = nn.Linear(state_size,hidden)

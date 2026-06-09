@@ -22,8 +22,8 @@ export const DEFAULT_SIM_CONFIG: SimConfig = {
   tireGripFront: 950,
   tireGripRear: 800,
   yawInertia: 250,
-  rayAngles: [-Math.PI / 2, -Math.PI / 3, -Math.PI / 6, -Math.PI / 12, 0, Math.PI / 12, Math.PI / 6, Math.PI / 3, Math.PI / 2],
-  rayMaxDistance: 250,
+  rayAngles: Array.from({ length: 19 }, (_, i) => ((i - 9) * Math.PI) / 18),
+  rayMaxDistance: 375,
   rayStep: 6
 };
 

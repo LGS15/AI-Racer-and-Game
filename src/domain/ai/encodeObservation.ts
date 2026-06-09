@@ -2,8 +2,8 @@ import { clamp } from '../geometry';
 import { DEFAULT_SIM_CONFIG } from '../simulation';
 import type { AgentObservation, SimConfig } from '../types';
 
-export const STATE_VECTOR_VERSION = 2;
-export const STATE_VECTOR_SIZE = 18;
+export const STATE_VECTOR_VERSION = 3;
+export const STATE_VECTOR_SIZE = 28;
 export const MAX_YAW_RATE = 6;
 
 export function encodeObservation(observation: AgentObservation, config: SimConfig = DEFAULT_SIM_CONFIG): number[] {

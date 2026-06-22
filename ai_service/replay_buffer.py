@@ -8,6 +8,9 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=capacity) # rolling buffer basically
 
     def push(self,state,action_index,reward,next_state,done):
+        # float32 arrays instead of python lists: ~7x less memory at 500k capacity
+        state = np.asarray(state, dtype=np.float32)
+        next_state = np.asarray(next_state, dtype=np.float32)
         self.buffer.append((state,action_index,reward,next_state,done))
         
     def sample(self,batch_size):

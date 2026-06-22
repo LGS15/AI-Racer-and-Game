@@ -39,7 +39,10 @@ class DQNAgent:
         q = self.online(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
-            next_q = self.target(next_states).max(dim=1).values
+            # Double DQN: online net picks the action, target net scores it,
+            # so one net's overestimation errors can't both select and value.
+            next_actions = self.online(next_states).argmax(dim=1, keepdim=True)
+            next_q = self.target(next_states).gather(1, next_actions).squeeze(1)
             td_target = rewards + (1.0 - dones) * self.gamma * next_q
 
         loss = F.smooth_l1_loss(q, td_target)
@@ -48,24 +51,33 @@ class DQNAgent:
         self.optimizer.step()
         return float(loss.item())
     
+    def set_lr(self, lr):
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr
+
     def sync_target(self):
         self.target.load_state_dict(self.online.state_dict())
 
-    def save(self, path, step=0, best_lap_time=None, best_reward=None):
+    def save(self, path, step=0, best_lap_time=None, best_reward=None, lr_anchor_step=None):
         torch.save({
             "online": self.online.state_dict(),
             "target": self.target.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
             "step": step,
             "best_lap_time": best_lap_time,
             "best_reward": best_reward,
+            "lr_anchor_step": lr_anchor_step,
         }, path)
 
     def load(self, path):
         ckpt = torch.load(path, map_location="cpu")
         self.online.load_state_dict(ckpt["online"])
         self.target.load_state_dict(ckpt["target"])
+        if "optimizer" in ckpt:  # older checkpoints predate optimizer state
+            self.optimizer.load_state_dict(ckpt["optimizer"])
         return {
             "step": int(ckpt.get("step", 0)),   # so epsilon resumes where it left off
             "best_lap_time": ckpt.get("best_lap_time"),
             "best_reward": ckpt.get("best_reward"),
+            "lr_anchor_step": ckpt.get("lr_anchor_step"),
         }

@@ -26,14 +26,17 @@ STATE_SIZE = 28
 ACTION_COUNT = len(AI_ACTIONS)
 
 BATCH_SIZE          = 64
-REPLAY_CAPACITY     = 50_000
+REPLAY_CAPACITY     = 500_000   # large enough to keep early diverse experience in the mix
 WARMUP_STEPS        = 2_000     # collect experience before the first train_step
 TRAIN_EVERY         = 4
 TARGET_UPDATE_EVERY = 1_000
 LOG_EVERY           = 1_000
 EPSILON_START       = 1.0
-EPSILON_END         = 0.05
+EPSILON_END         = 0.02      # converged policy: 5% random actions wrecked ~30 steps/lap, inflating lap-time variance
 EPSILON_DECAY_STEPS = 40_000
+LR_START            = 2.5e-4
+LR_END              = 5e-5      # smaller late-training steps damp policy churn once driving is decent
+LR_DECAY_STEPS      = 200_000   # counted from the first completed lap, not from step 0
 
 # Checkpoint lives next to this file (ai_service/models/dqn.pt) regardless of cwd.
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "dqn.pt")
@@ -44,6 +47,14 @@ os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
 def epsilon_at(step):
     frac = min(1.0, step / EPSILON_DECAY_STEPS)
     return EPSILON_START + frac * (EPSILON_END - EPSILON_START)
+
+def lr_at(step, anchor_step):
+    # Full lr while the agent still can't finish a lap; decay only once it can,
+    # so the schedule tracks learning progress instead of wall-clock steps.
+    if anchor_step is None:
+        return LR_START
+    frac = min(1.0, max(0.0, step - anchor_step) / LR_DECAY_STEPS)
+    return LR_START + frac * (LR_END - LR_START)
 
 class Trainer: 
     def __init__(self):
@@ -57,10 +68,14 @@ class Trainer:
                 checkpoint.get("best_lap_time"),
                 checkpoint.get("best_reward"),
             )
+            self.lr_anchor_step = checkpoint.get("lr_anchor_step")
+            if self.lr_anchor_step is None and self.performance.best_lap_time is not None:
+                self.lr_anchor_step = 0     # pre-anchor checkpoint that already laps: keep lr at the decayed floor
             print(f"resumed from {MODEL_PATH} at step {self.step}", flush=True)
         else:
             self.step = 0           # global, persists across episodes
             self.performance = BestPerformanceTracker()
+            self.lr_anchor_step = None      # set at the first completed lap
         self.last_loss = None       # most recent train_step loss (None until warmup)
         self.reward_sum = 0.0       # reward accumulated since the last log line
 
@@ -80,7 +95,11 @@ class Trainer:
         self.reward_sum += reward
         save_decision = self.performance.observe(reward, msg["env"])
         lap_time = _lap_time_from_env(msg["env"])
+        if lap_time is not None and self.lr_anchor_step is None:
+            self.lr_anchor_step = self.step
+            print(f"first completed lap at step {self.step}; lr decay starts here", flush=True)
         if len(self.buffer) >= WARMUP_STEPS and self.step % TRAIN_EVERY == 0:
+            self.agent.set_lr(lr_at(self.step, self.lr_anchor_step))
             self.last_loss = self.agent.train_step(self.buffer.sample(BATCH_SIZE))
         if self.step % TARGET_UPDATE_EVERY == 0:
             self.agent.sync_target()
@@ -126,6 +145,7 @@ class Trainer:
             self.step,
             self.performance.best_lap_time,
             self.performance.best_reward,
+            self.lr_anchor_step,
         )
         self.progress.log_checkpoint(
             decision,
